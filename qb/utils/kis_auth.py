@@ -46,7 +46,6 @@ class KISToken:
         """토큰 만료 여부 확인"""
         return datetime.now() >= self.expires_at
         
-    @property
     def is_near_expiry(self, minutes: int = 30) -> bool:
         """토큰이 곧 만료되는지 확인 (기본: 30분 전)"""
         return datetime.now() >= (self.expires_at - timedelta(minutes=minutes))

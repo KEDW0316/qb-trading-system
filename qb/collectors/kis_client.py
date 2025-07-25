@@ -11,7 +11,7 @@ import time
 import logging
 import asyncio
 import aiohttp
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional, Any, List
 from pathlib import Path
 import sys
@@ -251,3 +251,296 @@ class KISClient:
     
     def __repr__(self) -> str:
         return self.__str__()
+    
+    # ==================== API 래퍼 함수들 ====================
+    
+    async def get_account_balance(self) -> Dict[str, Any]:
+        """
+        계좌 잔고 및 보유 종목 조회
+        
+        Returns:
+            계좌 잔고 정보 및 보유 종목 목록
+        """
+        endpoint = "/uapi/domestic-stock/v1/trading/inquire-balance"
+        tr_id = "TTTC8434R" if self.mode == 'prod' else "VTTC8434R"
+        
+        account_number, account_product = self.account_info
+        
+        params = {
+            "CANO": account_number,
+            "ACNT_PRDT_CD": account_product,
+            "AFHR_FLPR_YN": "N",  # 시간외단가적용여부
+            "OFL_YN": "N",        # 오프라인여부  
+            "INQR_DVSN": "01",    # 조회구분(01: 대출일별, 02: 종목별)
+            "UNPR_DVSN": "01",    # 단가구분(01: 기준가, 02: 현재가)
+            "FUND_STTL_ICLD_YN": "N",    # 펀드결제분포함여부
+            "FNCG_AMT_AUTO_RDPT_YN": "N", # 융자금액자동상환여부
+            "PRCS_DVSN": "01",    # 처리구분(00: 전일매매포함, 01: 전일매매미포함)
+            "CTX_AREA_FK100": "",  # 연속조회검색조건100
+            "CTX_AREA_NK100": ""   # 연속조회키100
+        }
+        
+        return await self.request("GET", endpoint, tr_id=tr_id, params=params)
+    
+    async def get_stock_price(self, stock_code: str) -> Dict[str, Any]:
+        """
+        종목 현재가 조회
+        
+        Args:
+            stock_code: 종목코드 (예: "005930")
+            
+        Returns:
+            종목 현재가 정보
+        """
+        endpoint = "/uapi/domestic-stock/v1/quotations/inquire-price"
+        tr_id = "FHKST01010100"
+        
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",  # 조건시장분류코드
+            "FID_INPUT_ISCD": stock_code     # 입력종목코드
+        }
+        
+        return await self.request("GET", endpoint, tr_id=tr_id, params=params)
+    
+    async def get_stock_orderbook(self, stock_code: str) -> Dict[str, Any]:
+        """
+        종목 호가 정보 조회
+        
+        Args:
+            stock_code: 종목코드 (예: "005930")
+            
+        Returns:
+            종목 호가 정보 (매수/매도 호가)
+        """
+        endpoint = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+        tr_id = "FHKST01010200"
+        
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",  # 조건시장분류코드
+            "FID_INPUT_ISCD": stock_code     # 입력종목코드
+        }
+        
+        return await self.request("GET", endpoint, tr_id=tr_id, params=params)
+    
+    async def get_stock_daily_chart(
+        self, 
+        stock_code: str, 
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None, 
+        period: Optional[int] = None,
+        adjusted: bool = True
+    ) -> Dict[str, Any]:
+        """
+        종목 일봉 차트 조회
+        
+        Args:
+            stock_code: 종목코드 (예: "005930")
+            start_date: 시작일자 (YYYYMMDD, 생략시 period 또는 기본값 사용)
+            end_date: 종료일자 (YYYYMMDD, 생략시 오늘)
+            period: 조회 기간 (일 단위, start_date가 없을 때 사용)
+            adjusted: 수정주가 여부 (True: 수정주가, False: 원주가)
+            
+        Returns:
+            종목 일봉 차트 데이터
+        """
+        endpoint = "/uapi/domestic-stock/v1/quotations/inquire-daily-price"
+        tr_id = "FHKST01010400"
+        
+        # 날짜 설정
+        if not end_date:
+            end_date = datetime.now().strftime("%Y%m%d")
+        
+        if not start_date and period:
+            start_date = (datetime.now() - timedelta(days=period)).strftime("%Y%m%d")
+        elif not start_date:
+            start_date = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
+        
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",    # 조건시장분류코드
+            "FID_INPUT_ISCD": stock_code,      # 입력종목코드
+            "FID_PERIOD_DIV_CODE": "D",       # 기간분류코드 (D: 일봉)
+            "FID_ORG_ADJ_PRC": "1" if adjusted else "0",  # 수정주가원주가구분코드
+            "FID_INPUT_DATE_1": start_date,    # 입력날짜1
+            "FID_INPUT_DATE_2": end_date,      # 입력날짜2
+        }
+        
+        return await self.request("GET", endpoint, tr_id=tr_id, params=params)
+    
+    async def place_order(
+        self,
+        stock_code: str,
+        side: str,  # "buy" or "sell"
+        quantity: int,
+        price: Optional[int] = None,
+        order_type: str = "limit"  # "limit" or "market"
+    ) -> Dict[str, Any]:
+        """
+        주식 주문 실행
+        
+        Args:
+            stock_code: 종목코드 (예: "005930")
+            side: 매수/매도 구분 ("buy", "sell")
+            quantity: 주문 수량
+            price: 주문 가격 (시장가 주문 시 None 또는 0)
+            order_type: 주문 유형 ("limit": 지정가, "market": 시장가)
+            
+        Returns:
+            주문 결과 정보
+        """
+        endpoint = "/uapi/domestic-stock/v1/trading/order-cash"
+        
+        # 매수/매도 구분 코드 변환
+        side_code = "02" if side.lower() == "buy" else "01"  # 02: 매수, 01: 매도
+        
+        # TR ID 설정 (실전/모의투자 구분)
+        if side.lower() == "buy":
+            tr_id = "TTTC0802U" if self.mode == 'prod' else "VTTC0802U"
+        else:
+            tr_id = "TTTC0801U" if self.mode == 'prod' else "VTTC0801U"
+        
+        # 주문 구분 코드
+        order_division = "01" if order_type == "market" else "00"  # 00: 지정가, 01: 시장가
+        
+        # 주문 가격 설정
+        if order_type == "market" or price is None:
+            order_price = "0"
+        else:
+            order_price = str(price)
+        
+        account_number, account_product = self.account_info
+        
+        data = {
+            "CANO": account_number,           # 계좌번호
+            "ACNT_PRDT_CD": account_product,  # 계좌상품코드
+            "PDNO": stock_code,               # 상품번호 (종목코드)
+            "ORD_DVSN": order_division,       # 주문구분
+            "ORD_QTY": str(quantity),         # 주문수량
+            "ORD_UNPR": order_price,          # 주문단가
+            "CTAC_TLNO": "",                  # 연락처전화번호
+            "SLL_BUY_DVSN_CD": side_code,     # 매도매수구분코드
+            "ALGO_NO": ""                     # 알고리즘번호
+        }
+        
+        return await self.request("POST", endpoint, tr_id=tr_id, data=data)
+    
+    async def cancel_order(
+        self,
+        order_number: str,
+        stock_code: str,
+        quantity: int,
+        org_order_number: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        주문 취소
+        
+        Args:
+            order_number: 주문번호
+            stock_code: 종목코드
+            quantity: 취소 수량
+            org_order_number: 원주문번호 (정정 주문의 경우)
+            
+        Returns:
+            주문 취소 결과
+        """
+        endpoint = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
+        tr_id = "TTTC0803U" if self.mode == 'prod' else "VTTC0803U"
+        
+        account_number, account_product = self.account_info
+        
+        data = {
+            "CANO": account_number,                    # 계좌번호
+            "ACNT_PRDT_CD": account_product,           # 계좌상품코드
+            "KRX_FWDG_ORD_ORGNO": "",                 # 한국거래소전송주문조직번호
+            "ORGN_ODNO": org_order_number or order_number,  # 원주문번호
+            "ORD_DVSN": "00",                         # 주문구분
+            "RVSE_CNCL_DVSN_CD": "02",               # 정정취소구분코드 (02: 취소)
+            "PDNO": stock_code,                       # 상품번호
+            "ORD_QTY": str(quantity),                 # 주문수량
+            "ORD_UNPR": "0",                          # 주문단가
+            "CTAC_TLNO": "",                          # 연락처전화번호
+            "RSVN_ORD_YN": "N"                        # 예약주문여부
+        }
+        
+        return await self.request("POST", endpoint, tr_id=tr_id, data=data)
+    
+    async def modify_order(
+        self,
+        order_number: str,
+        stock_code: str,
+        quantity: int,
+        price: int,
+        org_order_number: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        주문 정정
+        
+        Args:
+            order_number: 주문번호
+            stock_code: 종목코드
+            quantity: 정정 수량
+            price: 정정 가격
+            org_order_number: 원주문번호
+            
+        Returns:
+            주문 정정 결과
+        """
+        endpoint = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
+        tr_id = "TTTC0803U" if self.mode == 'prod' else "VTTC0803U"
+        
+        account_number, account_product = self.account_info
+        
+        data = {
+            "CANO": account_number,                    # 계좌번호
+            "ACNT_PRDT_CD": account_product,           # 계좌상품코드
+            "KRX_FWDG_ORD_ORGNO": "",                 # 한국거래소전송주문조직번호
+            "ORGN_ODNO": org_order_number or order_number,  # 원주문번호
+            "ORD_DVSN": "00",                         # 주문구분
+            "RVSE_CNCL_DVSN_CD": "01",               # 정정취소구분코드 (01: 정정)
+            "PDNO": stock_code,                       # 상품번호
+            "ORD_QTY": str(quantity),                 # 주문수량
+            "ORD_UNPR": str(price),                   # 주문단가
+            "CTAC_TLNO": "",                          # 연락처전화번호
+            "RSVN_ORD_YN": "N"                        # 예약주문여부
+        }
+        
+        return await self.request("POST", endpoint, tr_id=tr_id, data=data)
+    
+    async def get_order_history(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Dict[str, Any]:
+        """
+        주문 내역 조회
+        
+        Args:
+            start_date: 조회 시작일 (YYYYMMDD, 생략시 오늘)
+            end_date: 조회 종료일 (YYYYMMDD, 생략시 시작일과 같음)
+            
+        Returns:
+            주문 내역 정보
+        """
+        endpoint = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+        tr_id = "TTTC8001R" if self.mode == 'prod' else "VTTC8001R"
+        
+        if not start_date:
+            start_date = datetime.now().strftime("%Y%m%d")
+        if not end_date:
+            end_date = start_date
+            
+        account_number, account_product = self.account_info
+        
+        params = {
+            "CANO": account_number,         # 계좌번호
+            "ACNT_PRDT_CD": account_product, # 계좌상품코드
+            "INQR_STRT_DT": start_date,     # 조회시작일자
+            "INQR_END_DT": end_date,        # 조회종료일자
+            "SLL_BUY_DVSN_CD": "00",        # 매도매수구분코드 (00: 전체)
+            "INQR_DVSN": "00",              # 조회구분 (00: 역순)
+            "PDNO": "",                      # 상품번호 (전체)
+            "CCLD_DVSN": "00",              # 체결구분 (00: 전체)
+            "ORD_GNO_BRNO": "",             # 주문채번지점번호
+            "ODNO": "",                      # 주문번호
+            "INQR_DVSN_3": "00",            # 조회구분3
+            "INQR_DVSN_1": "",              # 조회구분1
+            "CTX_AREA_FK100": "",           # 연속조회검색조건100
+            "CTX_AREA_NK100": ""            # 연속조회키100
+        }
+        
+        return await self.request("GET", endpoint, tr_id=tr_id, params=params)
