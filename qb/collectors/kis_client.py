@@ -21,20 +21,36 @@ project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
 from utils.kis_auth import KISAuth
+from utils.trading_mode import TradingModeManager
 
 
 class KISClient:
     """한국투자증권 API 기본 클라이언트 클래스"""
     
-    def __init__(self, mode: str = 'paper'):
+    def __init__(self, mode: Optional[str] = None):
         """
         KIS 클라이언트 초기화
         
         Args:
-            mode: 'prod' (실전투자) 또는 'paper' (모의투자)
+            mode: 'prod' (실전투자) 또는 'paper' (모의투자), None일 경우 설정 파일의 모드 사용
         """
         self.logger = logging.getLogger(__name__)
-        self.mode = mode.lower()
+        
+        # 거래 모드 관리자 초기화
+        self.mode_manager = TradingModeManager()
+        
+        # mode 파라미터가 명시적으로 전달된 경우 모드 설정
+        if mode is not None:
+            mode = mode.lower()
+            if mode == 'paper':
+                self.mode_manager.switch_to_paper_mode()
+            elif mode == 'prod':
+                self.mode_manager.switch_to_prod_mode(force=True, reason="Explicit mode parameter")
+            else:
+                raise ValueError(f"Invalid mode: {mode}. Use 'paper' or 'prod'")
+        
+        # 현재 모드 설정
+        self.mode = self.mode_manager.get_current_mode()
         
         # KIS 인증 인스턴스 생성
         self.auth = KISAuth(mode=self.mode)
@@ -227,7 +243,72 @@ class KISClient:
     @property
     def is_paper_trading(self) -> bool:
         """모의투자 여부"""
-        return self.auth.is_paper_trading()
+        return self.mode_manager.is_paper_trading()
+    
+    def switch_to_paper_mode(self) -> bool:
+        """
+        모의투자 모드로 전환
+        
+        Returns:
+            전환 성공 여부
+        """
+        if self.mode_manager.switch_to_paper_mode():
+            self.mode = 'paper'
+            # 인증 객체 재생성
+            self.auth = KISAuth(mode=self.mode)
+            self.logger.info("Successfully switched to paper trading mode")
+            return True
+        return False
+    
+    def switch_to_prod_mode(self, force: bool = False, reason: str = "Manual switch") -> bool:
+        """
+        실전투자 모드로 전환
+        
+        Args:
+            force: 확인 프롬프트 생략 여부
+            reason: 전환 사유
+            
+        Returns:
+            전환 성공 여부
+        """
+        if self.mode_manager.switch_to_prod_mode(force=force, reason=reason):
+            self.mode = 'prod'
+            # 인증 객체 재생성
+            self.auth = KISAuth(mode=self.mode)
+            self.logger.warning("Successfully switched to real trading mode")
+            return True
+        return False
+    
+    def get_current_mode_info(self) -> Dict[str, Any]:
+        """
+        현재 거래 모드 정보 반환
+        
+        Returns:
+            모드 정보 딕셔너리
+        """
+        return {
+            "mode": self.mode,
+            "mode_name": self.mode_manager.get_mode_name(),
+            "is_paper_trading": self.is_paper_trading,
+            "base_url": self.mode_manager.get_base_url(),
+            "tr_id_prefix": self.mode_manager.get_tr_id_prefix(),
+            "safety_settings": self.mode_manager.get_safety_settings()
+        }
+    
+    def _get_tr_id(self, base_id: str) -> str:
+        """
+        현재 모드에 맞는 TR ID 생성
+        
+        Args:
+            base_id: 기본 TR ID (예: "TTC8434R")
+            
+        Returns:
+            모드별 TR ID (예: "VTTC8434R" for paper, "TTTC8434R" for prod)
+        """
+        prefix = self.mode_manager.get_tr_id_prefix()
+        if prefix and base_id.startswith('T'):
+            return f"{prefix}{base_id[1:]}"
+        return base_id
     
     def get_daily_request_count(self) -> int:
         """일일 요청 수 반환"""
@@ -262,7 +343,7 @@ class KISClient:
             계좌 잔고 정보 및 보유 종목 목록
         """
         endpoint = "/uapi/domestic-stock/v1/trading/inquire-balance"
-        tr_id = "TTTC8434R" if self.mode == 'prod' else "VTTC8434R"
+        tr_id = self._get_tr_id("TTC8434R")
         
         account_number, account_product = self.account_info
         
@@ -394,9 +475,9 @@ class KISClient:
         
         # TR ID 설정 (실전/모의투자 구분)
         if side.lower() == "buy":
-            tr_id = "TTTC0802U" if self.mode == 'prod' else "VTTC0802U"
+            tr_id = self._get_tr_id("TTC0802U")
         else:
-            tr_id = "TTTC0801U" if self.mode == 'prod' else "VTTC0801U"
+            tr_id = self._get_tr_id("TTC0801U")
         
         # 주문 구분 코드
         order_division = "01" if order_type == "market" else "00"  # 00: 지정가, 01: 시장가
@@ -443,7 +524,7 @@ class KISClient:
             주문 취소 결과
         """
         endpoint = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
-        tr_id = "TTTC0803U" if self.mode == 'prod' else "VTTC0803U"
+        tr_id = self._get_tr_id("TTC0803U")
         
         account_number, account_product = self.account_info
         
@@ -485,7 +566,7 @@ class KISClient:
             주문 정정 결과
         """
         endpoint = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
-        tr_id = "TTTC0803U" if self.mode == 'prod' else "VTTC0803U"
+        tr_id = self._get_tr_id("TTC0803U")
         
         account_number, account_product = self.account_info
         
@@ -517,7 +598,7 @@ class KISClient:
             주문 내역 정보
         """
         endpoint = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
-        tr_id = "TTTC8001R" if self.mode == 'prod' else "VTTC8001R"
+        tr_id = self._get_tr_id("TTC8001R")
         
         if not start_date:
             start_date = datetime.now().strftime("%Y%m%d")
