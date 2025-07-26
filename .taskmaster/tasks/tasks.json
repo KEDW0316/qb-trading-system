@@ -177,7 +177,7 @@
         "id": 23,
         "title": "실시간 데이터 수집 WebSocket 클라이언트",
         "description": "한국투자증권 WebSocket API를 활용한 실시간 시세, 호가, 체결 데이터 수집 시스템 구현 및 다중 소스 데이터 통합",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           21,
           22
@@ -190,7 +190,7 @@
             "id": 1,
             "title": "DataCollector 엔진 클래스 구현",
             "description": "이벤트 기반 아키텍처를 지원하는 메인 데이터 수집기 엔진 구현",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -199,7 +199,7 @@
             "id": 2,
             "title": "KISDataAdapter 구현",
             "description": "한국투자증권 WebSocket/REST API 연동 어댑터 구현",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -208,7 +208,7 @@
             "id": 3,
             "title": "NaverDataAdapter 및 YahooDataAdapter 구현",
             "description": "보조 데이터 소스로 네이버 금융과 야후 파이낸스 어댑터 구현",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -217,7 +217,7 @@
             "id": 4,
             "title": "DataNormalizer 구현",
             "description": "다양한 소스의 데이터를 표준 형식으로 정규화하는 컴포넌트 구현",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -226,7 +226,7 @@
             "id": 5,
             "title": "ConnectionManager 구현",
             "description": "연결 관리 및 자동 재연결 로직을 담당하는 컴포넌트 구현",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -235,7 +235,7 @@
             "id": 6,
             "title": "Redis Rolling 업데이트 구현",
             "description": "종목별 최근 200개 캔들만 유지하는 Rolling 업데이트 메커니즘 구현",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -244,7 +244,7 @@
             "id": 7,
             "title": "market_data_received 이벤트 발행 구현",
             "description": "데이터 수신 및 처리 후 이벤트를 발행하는 로직 구현",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -253,7 +253,7 @@
             "id": 8,
             "title": "데이터 품질 검증 및 이상치 탐지 구현",
             "description": "수신된 데이터의 유효성 검증 및 이상치 탐지 로직 구현",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -1015,7 +1015,7 @@
     ],
     "metadata": {
       "created": "2025-07-25T04:33:23.955Z",
-      "updated": "2025-07-26T15:40:48.006Z",
+      "updated": "2025-07-26T16:18:56.827Z",
       "description": "Tasks for master context"
     }
   }
