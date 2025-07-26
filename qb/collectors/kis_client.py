@@ -22,6 +22,7 @@ sys.path.append(str(project_root))
 
 from utils.kis_auth import KISAuth
 from utils.trading_mode import TradingModeManager
+from utils.api_monitor import APIMonitor
 
 
 class KISClient:
@@ -63,6 +64,9 @@ class KISClient:
         
         # 기본 타임아웃 설정
         self.default_timeout = 30
+        
+        # API 모니터 초기화
+        self.api_monitor = APIMonitor()
         
         self.logger.info(f"KISClient initialized in {self.mode} mode")
     
@@ -122,7 +126,7 @@ class KISClient:
         await self._manage_rate_limit()
         
         # 토큰 확인 및 갱신
-        token = self.auth.get_token()
+        _ = self.auth.get_token()
         
         # 요청 헤더 구성
         if tr_id:
@@ -134,6 +138,13 @@ class KISClient:
             request_headers.update(headers)
         
         url = f"{self.auth.base_url}{endpoint}"
+        
+        # 요청 시작 시간 기록
+        start_time = time.time()
+        response_data = None
+        status_code = None
+        success = False
+        error_message = None
         
         # 재시도 로직
         last_exception = None
@@ -158,6 +169,7 @@ class KISClient:
                     
                     async with session.request(method, url, **request_kwargs) as response:
                         response_text = await response.text()
+                        status_code = response.status
                         
                         self.logger.debug(
                             f"Response {response.status}: {response_text[:200]}..."
@@ -165,16 +177,21 @@ class KISClient:
                         
                         if response.status == 200:
                             try:
-                                return json.loads(response_text)
+                                response_data = json.loads(response_text)
+                                success = True
+                                break  # 성공하면 루프 종료
                             except json.JSONDecodeError:
-                                return response_text
+                                response_data = response_text
+                                success = True
+                                break  # 성공하면 루프 종료
                         
                         elif response.status == 401:  # 인증 오류
+                            error_message = "Authentication error"
                             self.logger.warning("Authentication error, refreshing token")
                             # 토큰 재발급 시도
                             try:
                                 self.auth._current_token = None  # 현재 토큰 무효화
-                                token = self.auth.get_token()  # 새 토큰 발급
+                                _ = self.auth.get_token()  # 새 토큰 발급
                                 # 헤더 업데이트
                                 if tr_id:
                                     request_headers = self.auth.get_trading_headers(tr_id)
@@ -189,17 +206,18 @@ class KISClient:
                                 continue
                         
                         # 기타 HTTP 오류
-                        error_msg = f"HTTP {response.status}: {response_text}"
-                        self.logger.error(error_msg)
-                        last_exception = Exception(error_msg)
+                        error_message = f"HTTP {response.status}: {response_text}"
+                        self.logger.error(error_message)
+                        last_exception = Exception(error_message)
+                        response_data = response_text
                         
                         if attempt < retry_count - 1:
                             continue
                         
             except asyncio.TimeoutError:
-                error_msg = f"Request timeout after {self.default_timeout}s"
-                self.logger.warning(error_msg)
-                last_exception = Exception(error_msg)
+                error_message = f"Request timeout after {self.default_timeout}s"
+                self.logger.warning(error_message)
+                last_exception = Exception(error_message)
                 
                 if attempt < retry_count - 1:
                     wait_time = 2 ** attempt  # 지수 백오프
@@ -208,9 +226,9 @@ class KISClient:
                     continue
                     
             except aiohttp.ClientError as e:
-                error_msg = f"Client error: {str(e)}"
-                self.logger.warning(error_msg)
-                last_exception = Exception(error_msg)
+                error_message = f"Client error: {str(e)}"
+                self.logger.warning(error_message)
+                last_exception = Exception(error_message)
                 
                 if attempt < retry_count - 1:
                     wait_time = 2 ** attempt  # 지수 백오프
@@ -219,9 +237,9 @@ class KISClient:
                     continue
                     
             except Exception as e:
-                error_msg = f"Unexpected error: {str(e)}"
-                self.logger.error(error_msg)
-                last_exception = Exception(error_msg)
+                error_message = f"Unexpected error: {str(e)}"
+                self.logger.error(error_message)
+                last_exception = Exception(error_message)
                 
                 if attempt < retry_count - 1:
                     wait_time = 2 ** attempt
@@ -229,11 +247,30 @@ class KISClient:
                     await asyncio.sleep(wait_time)
                     continue
         
+        # 응답 시간 계산
+        response_time = time.time() - start_time
+        
+        # API 모니터에 로깅
+        await self.api_monitor.log_request(
+            method=method,
+            endpoint=endpoint,
+            tr_id=tr_id,
+            request_data=data if data else params,
+            response_data=response_data,
+            status_code=status_code,
+            response_time=response_time,
+            success=success,
+            error_message=error_message
+        )
+        
         # 모든 재시도 실패
-        if last_exception:
-            raise last_exception
-        else:
-            raise Exception(f"Request failed after {retry_count} attempts")
+        if not success:
+            if last_exception:
+                raise last_exception
+            else:
+                raise Exception(f"Request failed after {retry_count} attempts")
+        
+        return response_data
     
     @property
     def account_info(self) -> tuple:
