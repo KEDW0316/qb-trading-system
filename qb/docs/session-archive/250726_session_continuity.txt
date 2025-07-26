@@ -1,3 +1,4 @@
+/Users/dongwon/anaconda3/envs/qb/bin/python tests/test_api_monitor.py
 ===================================== Previous Conversation Compacted ====================================
 ⏺ Compact summary
   ⎿ This session is being continued from a previous conversation that ran out of context. The conversation
