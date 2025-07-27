@@ -278,7 +278,7 @@
         "id": 25,
         "title": "전략 엔진 플러그인 아키텍처 구현",
         "description": "다양한 트레이딩 전략을 쉽게 추가하고 교체할 수 있는 이벤트 기반 플러그인 아키텍처 설계 및 구현",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           19,
           20
@@ -291,7 +291,7 @@
             "id": 1,
             "title": "BaseStrategy 추상 클래스 구현",
             "description": "전략 인터페이스 정의 및 기본 메서드 구현",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -300,7 +300,7 @@
             "id": 2,
             "title": "StrategyLoader 구현",
             "description": "동적으로 전략 클래스를 발견하고 로드/언로드하는 기능 구현",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -309,7 +309,7 @@
             "id": 3,
             "title": "StrategyEngine 구현",
             "description": "이벤트 구독 및 전략 실행 엔진 구현",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -318,7 +318,7 @@
             "id": 4,
             "title": "전략 성과 추적기 구현",
             "description": "전략별 성과를 추적하고 기록하는 시스템 구현",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -327,7 +327,7 @@
             "id": 5,
             "title": "샘플 전략 구현",
             "description": "이동평균 교차, RSI, 볼린저 밴드 등 샘플 전략 구현",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -336,7 +336,7 @@
             "id": 6,
             "title": "이벤트 기반 통합 테스트",
             "description": "market_data_received 이벤트부터 trading_signal 발행까지 전체 흐름 테스트",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "",
             "testStrategy": ""
@@ -1015,7 +1015,7 @@
     ],
     "metadata": {
       "created": "2025-07-25T04:33:23.955Z",
-      "updated": "2025-07-27T00:21:46.041Z",
+      "updated": "2025-07-27T00:41:59.323Z",
       "description": "Tasks for master context"
     }
   }
