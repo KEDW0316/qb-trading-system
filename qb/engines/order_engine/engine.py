@@ -16,13 +16,14 @@ from .base import (
     BaseBrokerClient, BaseOrderQueue, BasePositionManager, BaseCommissionCalculator
 )
 from ..strategy_engine.base import TradingSignal
-from ...utils.event_bus import EventBus, EventType
+from ..event_bus import EnhancedEventBus, EventType, EventFilter
+from ..event_bus.adapters import OrderEventPublisher, EngineEventMixin
 from ...utils.redis_manager import RedisManager
 
 logger = logging.getLogger(__name__)
 
 
-class OrderEngine:
+class OrderEngine(EngineEventMixin):
     """
     주문 엔진 - 이벤트 기반 주문 처리 시스템
     
@@ -39,7 +40,7 @@ class OrderEngine:
         order_queue: BaseOrderQueue,
         position_manager: BasePositionManager,
         commission_calculator: BaseCommissionCalculator,
-        event_bus: EventBus,
+        event_bus: EnhancedEventBus,
         redis_manager: RedisManager,
         config: Optional[Dict[str, Any]] = None
     ):
@@ -49,6 +50,12 @@ class OrderEngine:
         self.commission_calculator = commission_calculator
         self.event_bus = event_bus
         self.redis_manager = redis_manager
+        
+        # Event Bus 초기화
+        self.init_event_bus(event_bus, "OrderEngine")
+        
+        # 전용 발행자 초기화
+        self.order_publisher = OrderEventPublisher(event_bus, "OrderEngine")
         
         # 설정 기본값
         self.config = config or {}

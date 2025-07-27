@@ -15,12 +15,13 @@ import logging
 from .base import BaseStrategy, MarketData, TradingSignal
 from .loader import StrategyLoader
 from ...utils.redis_manager import RedisManager
-from ...utils.event_bus import EventBus
+from ..event_bus import EnhancedEventBus, EventType, EventFilter
+from ..event_bus.adapters import TradingSignalPublisher, EngineEventMixin
 
 logger = logging.getLogger(__name__)
 
 
-class StrategyEngine:
+class StrategyEngine(EngineEventMixin):
     """
     전략 실행 엔진
     
@@ -28,7 +29,7 @@ class StrategyEngine:
     활성화된 전략들을 실행하고 거래 신호를 생성합니다.
     """
 
-    def __init__(self, redis_manager: RedisManager, event_bus: EventBus):
+    def __init__(self, redis_manager: RedisManager, event_bus: EnhancedEventBus):
         """
         전략 엔진 초기화
         
@@ -39,6 +40,12 @@ class StrategyEngine:
         self.redis = redis_manager
         self.event_bus = event_bus
         self.strategy_loader = StrategyLoader()
+        
+        # Event Bus 초기화
+        self.init_event_bus(event_bus, "StrategyEngine")
+        
+        # 전용 발행자 초기화
+        self.signal_publisher = TradingSignalPublisher(event_bus, "StrategyEngine")
         
         # 활성 전략 관리
         self.active_strategies: Dict[str, BaseStrategy] = {}

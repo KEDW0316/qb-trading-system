@@ -14,7 +14,8 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from enum import Enum
 
-from ...utils.event_bus import EventBus, EventType
+from ..event_bus import EnhancedEventBus, EventType, EventFilter
+from ..event_bus.adapters import RiskEventPublisher, EngineEventMixin
 from ...utils.redis_manager import RedisManager
 from ...database.connection import DatabaseManager
 
@@ -54,7 +55,7 @@ class RiskMetrics:
     updated_at: datetime
 
 
-class RiskEngine:
+class RiskEngine(EngineEventMixin):
     """
     리스크 관리 엔진
     
@@ -70,13 +71,19 @@ class RiskEngine:
         self,
         db_manager: DatabaseManager,
         redis_manager: RedisManager,
-        event_bus: EventBus,
+        event_bus: EnhancedEventBus,
         config: Optional[Dict[str, Any]] = None
     ):
         self.db_manager = db_manager
         self.redis_manager = redis_manager
         self.event_bus = event_bus
         self.config = config or self._get_default_config()
+        
+        # Event Bus 초기화
+        self.init_event_bus(event_bus, "RiskEngine")
+        
+        # 전용 발행자 초기화
+        self.risk_publisher = RiskEventPublisher(event_bus, "RiskEngine")
         
         # 런타임 상태
         self._running = False
