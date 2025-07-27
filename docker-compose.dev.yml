@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # PostgreSQL + TimescaleDB
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    container_name: qb_postgres_dev
+    environment:
+      POSTGRES_DB: qb_trading_dev
+      POSTGRES_USER: qb_user
+      POSTGRES_PASSWORD: qb_pass
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - qb_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qb_user -d qb_trading_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: qb_redis_dev
+    command: redis-server --appendonly yes --maxmemory 150mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data_dev:/data
+    networks:
+      - qb_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Commander (Redis 관리 UI)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: qb_redis_commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - qb_network
+
+  # Adminer (PostgreSQL 관리 UI)
+  adminer:
+    image: adminer
+    container_name: qb_adminer
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    networks:
+      - qb_network
+
+volumes:
+  postgres_data_dev:
+  redis_data_dev:
+
+networks:
+  qb_network:
+    driver: bridge

@@ -16,7 +16,7 @@
         "id": 20,
         "title": "PostgreSQL 및 TimescaleDB 설정",
         "description": "시계열 데이터 최적화를 위한 PostgreSQL 및 TimescaleDB 설치, 설정 및 스키마 구현",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           19
         ],
@@ -1015,7 +1015,7 @@
     ],
     "metadata": {
       "created": "2025-07-25T04:33:23.955Z",
-      "updated": "2025-07-26T16:18:56.827Z",
+      "updated": "2025-07-27T00:21:46.041Z",
       "description": "Tasks for master context"
     }
   }
