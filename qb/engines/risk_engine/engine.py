@@ -382,7 +382,7 @@ class RiskEngine(EngineEventMixin):
                 self._consecutive_losses = 0  # 수익 시 리셋
             
             # Redis에 저장
-            await self.redis_manager.set(
+            self.redis_manager.set(
                 "risk_metrics:consecutive_losses",
                 str(self._consecutive_losses),
                 ttl=86400
@@ -621,13 +621,13 @@ class RiskEngine(EngineEventMixin):
             
             # Redis에서 일일 손익 로드
             daily_pnl_key = f"risk_metrics:daily_pnl:{today}"
-            daily_pnl = await self.redis_manager.get(daily_pnl_key)
+            daily_pnl = self.redis_manager.get(daily_pnl_key)
             if daily_pnl:
                 self._daily_pnl = Decimal(daily_pnl)
             
             # 거래 횟수 로드
             trade_count_key = f"risk_metrics:trade_count:{today}"
-            trade_count = await self.redis_manager.get(trade_count_key)
+            trade_count = self.redis_manager.get(trade_count_key)
             if trade_count:
                 self._trade_count_today = int(trade_count)
             
@@ -641,7 +641,7 @@ class RiskEngine(EngineEventMixin):
         try:
             today = datetime.now().strftime('%Y-%m-%d')
             daily_pnl_key = f"risk_metrics:daily_pnl:{today}"
-            await self.redis_manager.set(daily_pnl_key, str(self._daily_pnl), ttl=86400)
+            self.redis_manager.set(daily_pnl_key, str(self._daily_pnl), ttl=86400)
             
         except Exception as e:
             logger.error(f"Error saving daily PnL: {e}")
@@ -651,7 +651,7 @@ class RiskEngine(EngineEventMixin):
         try:
             month = datetime.now().strftime('%Y-%m')
             monthly_pnl_key = f"risk_metrics:monthly_pnl:{month}"
-            await self.redis_manager.set(monthly_pnl_key, str(self._monthly_pnl), ttl=86400*31)
+            self.redis_manager.set(monthly_pnl_key, str(self._monthly_pnl), ttl=86400*31)
             
         except Exception as e:
             logger.error(f"Error saving monthly PnL: {e}")

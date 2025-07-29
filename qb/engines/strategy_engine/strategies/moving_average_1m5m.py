@@ -27,7 +27,7 @@ class MovingAverage1M5MStrategy(BaseStrategy):
     - 끼 있는 종목 (최근 6개월간 15% 이상 상승 경험) 대상
     """
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
+    def __init__(self, params: Optional[Dict[str, Any]] = None, redis_manager=None):
         default_params = {
             "ma_period": 5,  # 이동평균 기간 (5분)
             "confidence_threshold": 0.7,  # 신호 신뢰도 임계값
@@ -37,7 +37,7 @@ class MovingAverage1M5MStrategy(BaseStrategy):
             "min_volume_threshold": 30_000_000_000,  # 최소 거래대금 (300억원)
             "enable_volume_filter": True,  # 거래대금 필터 활성화
         }
-        super().__init__(params or default_params)
+        super().__init__(params or default_params, redis_manager)
         
         # 포지션 상태 추적
         self.current_position = {}  # symbol -> {'quantity': int, 'entry_price': float, 'entry_time': datetime}
@@ -76,8 +76,10 @@ class MovingAverage1M5MStrategy(BaseStrategy):
             indicators = market_data.indicators or {}
             ma_5m = indicators.get(f"sma_{self.params['ma_period']}")
             
+            logger.info(f"🔍 [STRATEGY DEBUG] {symbol}: Current price={current_price:,.0f}, MA_{self.params['ma_period']}={ma_5m}, Available indicators: {list(indicators.keys())}")
+            
             if ma_5m is None:
-                logger.warning(f"Missing MA data for {symbol}")
+                logger.warning(f"Missing MA data for {symbol} - looking for sma_{self.params['ma_period']}")
                 return None
             
             # 거래대금 필터 확인 (활성화된 경우)
@@ -97,22 +99,26 @@ class MovingAverage1M5MStrategy(BaseStrategy):
             weighted_ma = ma_5m * self.params.get("weight_multiplier", 1.0)
             
             # 매매 신호 생성
+            logger.info(f"🔍 [STRATEGY DEBUG] {symbol}: Signal check - Current: {current_price:,.0f}, Weighted MA: {weighted_ma:,.0f}, Has position: {has_position}")
+            
             if current_price > weighted_ma:
                 # 매수 신호
                 if not has_position:
+                    logger.info(f"🚀 [STRATEGY SIGNAL] {symbol}: Generating BUY signal!")
                     return await self._generate_buy_signal(symbol, current_price, current_time, ma_5m)
                 else:
                     # 이미 보유 중 - 홀딩
-                    logger.debug(f"Holding position for {symbol} (price: {current_price} > MA: {ma_5m})")
+                    logger.info(f"🔍 [STRATEGY DEBUG] {symbol}: BUY condition met BUT already holding position")
                     return None
             
             elif current_price <= weighted_ma:
                 # 매도 신호
                 if has_position:
+                    logger.info(f"🚀 [STRATEGY SIGNAL] {symbol}: Generating SELL signal!")
                     return await self._generate_sell_signal(symbol, current_price, current_time, ma_5m)
                 else:
                     # 포지션 없음 - 관망
-                    logger.debug(f"Watching {symbol} (price: {current_price} <= MA: {ma_5m})")
+                    logger.info(f"🔍 [STRATEGY DEBUG] {symbol}: SELL condition met BUT no position to sell")
                     return None
             
             return None
@@ -124,10 +130,12 @@ class MovingAverage1M5MStrategy(BaseStrategy):
     async def _generate_buy_signal(self, symbol: str, price: float, 
                                  timestamp: datetime, ma_value: float) -> TradingSignal:
         """매수 신호 생성"""
+        logger.info(f"🎯 [BUY SIGNAL] Creating BUY signal for {symbol} at ₩{price:,.0f}")
         
         # 신뢰도 계산 (가격이 이동평균을 얼마나 상회하는지)
         price_ratio = price / ma_value
         confidence = min(0.95, max(0.5, (price_ratio - 1.0) * 10 + 0.7))
+        logger.info(f"🎯 [BUY SIGNAL] {symbol}: Price ratio={price_ratio:.4f}, Confidence={confidence:.2f}")
         
         # 포지션 기록
         self.current_position[symbol] = {
@@ -160,8 +168,12 @@ class MovingAverage1M5MStrategy(BaseStrategy):
         position = self.current_position.get(symbol, {})
         entry_price = position.get('entry_price', price)
         
-        # 수익률 계산
-        return_rate = (price - entry_price) / entry_price if entry_price > 0 else 0
+        # 실시간 매수호가 조회 (매도할 때 사용할 가격)
+        best_bid_price = self.redis_manager.get_best_bid_price(symbol)
+        sell_price = best_bid_price if best_bid_price > 0 else price  # 호가가 없으면 1분봉 종가 사용
+        
+        # 수익률 계산 (실제 매도 예상 가격 기준)
+        return_rate = (sell_price - entry_price) / entry_price if entry_price > 0 else 0
         
         # 신뢰도 계산
         confidence = 0.8 if return_rate > 0 else 0.9  # 손실시 더 높은 신뢰도로 매도
@@ -174,16 +186,19 @@ class MovingAverage1M5MStrategy(BaseStrategy):
             action='SELL',
             symbol=symbol,
             confidence=confidence,
-            price=price,
+            price=sell_price,  # 실시간 매수호가 사용
             quantity=None,  # 보유 수량 전체
-            reason=f"1분봉 종가({price}) <= 5분 평균({ma_value:.2f})",
+            reason=f"1분봉 종가({price}) <= 5분 평균({ma_value:.2f}), 매수호가: {sell_price}",
             metadata={
                 'strategy': '1분봉_5분봉',
                 'current_price': price,
+                'sell_price': sell_price,
+                'best_bid_price': best_bid_price,
                 'ma_5m': ma_value,
                 'entry_price': entry_price,
                 'return_rate': return_rate,
-                'signal_type': 'momentum_sell'
+                'signal_type': 'momentum_sell',
+                'order_type': 'limit'  # 지정가 주문으로 변경
             },
             timestamp=timestamp
         )

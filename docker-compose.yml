@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  # PostgreSQL + TimescaleDB
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    container_name: qb_postgres
+    environment:
+      POSTGRES_DB: qb_trading_dev
+      POSTGRES_USER: qb_user
+      POSTGRES_PASSWORD: qb_pass
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - qb_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qb_user -d qb_trading_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: qb_redis
+    command: redis-server --appendonly yes --maxmemory 150mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - qb_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # QB Trading System
+  qb_trading:
+    build: .
+    container_name: qb_trading_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Override database URLs to use container names
+      DATABASE_URL: postgresql://qb_user:qb_pass@postgres:5432/qb_trading_dev
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro  # Read-only mount for security
+    networks:
+      - qb_network
+    restart: unless-stopped
+    command: ["uv", "run", "python", "run_live_trading.py", "--symbol", "005930", "--max-amount", "100000", "--stop-loss", "3.0"]
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  qb_network:
+    driver: bridge

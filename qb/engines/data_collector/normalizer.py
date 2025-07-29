@@ -32,11 +32,21 @@ class DataNormalizer:
                 'high': 'high',
                 'low': 'low'
             },
+            'mock': {
+                'symbol': 'symbol',
+                'close': 'close',
+                'volume': 'volume',
+                'change': 'change',
+                'timestamp': 'timestamp',
+                'open': 'open',
+                'high': 'high',
+                'low': 'low'
+            },
             'kis': {
-                'symbol': 'MKSC_SHRN_ISCD',
-                'close': 'STCK_PRPR',
-                'volume': 'CNTG_VOL',
-                'change': 'PRDY_VRSS',
+                'symbol': 'symbol',  # 새로운 파싱 방식에서는 직접 symbol 키 사용
+                'close': 'close',    # 새로운 파싱 방식에서는 직접 close 키 사용
+                'volume': 'volume',
+                'change': 'change',
                 'timestamp': 'timestamp'
             },
             'naver': {
@@ -69,6 +79,11 @@ class DataNormalizer:
         try:
             if source not in self.field_mappings:
                 raise ValueError(f"Unsupported data source: {source}")
+            
+            # 디버그: 입력 데이터 확인 (처음 몇 개만)
+            if not hasattr(self, '_input_data_logged'):
+                self.logger.info(f"Normalizer input data: {raw_data}")
+                self._input_data_logged = True
             
             mapping = self.field_mappings[source]
             normalized = {}
@@ -203,6 +218,7 @@ class DataNormalizer:
         
         # 데이터 타입 검증
         if not isinstance(data['symbol'], str) or not data['symbol']:
+            self.logger.error(f"Symbol validation failed: {data.get('symbol')} (type: {type(data.get('symbol'))})")
             raise ValueError("Invalid symbol")
         
         if not isinstance(data['close'], (int, float)) or data['close'] < 0:
@@ -219,6 +235,9 @@ class DataNormalizer:
             # 소스별 심볼 변환
             if source == 'test':
                 # 테스트용 소스
+                return symbol
+            elif source == 'mock':
+                # Mock 데이터 소스
                 return symbol
             elif source == 'kis':
                 # 한국투자증권 형식 (6자리 숫자)

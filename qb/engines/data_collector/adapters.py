@@ -133,13 +133,18 @@ class KISDataAdapter(BaseDataAdapter):
         
         # 구독 관리
         self.subscription_ids = {}  # symbol -> subscription_id 매핑
+        self.pending_subscriptions = []  # 대기 중인 구독 요청들
+        self._listener_task = None  # 메시지 리스너 태스크
+        self._reconnect_task = None  # 재연결 태스크
         
     def _get_websocket_url(self) -> str:
         """현재 모드에 따른 WebSocket URL 반환"""
-        if self.kis_client.mode_manager.is_paper_mode():
-            return "ws://ops.koreainvestment.com:31000"  # 모의투자
+        # 실제 거래 모드인지 확인 (prod/real = 실전투자)
+        current_mode = self.kis_client.mode_manager.get_current_mode()
+        if current_mode in ['prod', 'real']:
+            return "ws://ops.koreainvestment.com:21000/tryitout"  # 실전투자
         else:
-            return "ws://ops.koreainvestment.com:21000"  # 실전투자
+            return "ws://ops.koreainvestment.com:31000/tryitout"  # 모의투자
     
     async def connect(self) -> bool:
         """KIS WebSocket 연결"""
@@ -147,47 +152,39 @@ class KISDataAdapter(BaseDataAdapter):
             self.status = AdapterStatus.CONNECTING
             
             # 기존 KIS 클라이언트 인증 확인
-            if not hasattr(self.kis_client, 'auth') or not self.kis_client.auth.access_token:
-                self.logger.error("KIS client not authenticated")
+            try:
+                token = self.kis_client.auth.get_token()
+                if not token or not token.access_token:
+                    self.logger.error("KIS client not authenticated - no valid token")
+                    return False
+                self.logger.info(f"KIS authentication successful - token expires at {token.expires_at}")
+            except Exception as e:
+                self.logger.error(f"KIS authentication failed: {e}")
                 return False
             
-            # WebSocket 연결
+            # WebSocket 승인키 가져오기
+            try:
+                ws_headers = self.kis_client.auth.get_websocket_headers()
+                self.approval_key = ws_headers.get('approval_key')
+                if not self.approval_key:
+                    self.logger.error("Failed to get WebSocket approval_key")
+                    return False
+                self.logger.info("WebSocket approval_key obtained successfully")
+            except Exception as e:
+                self.logger.error(f"Failed to get WebSocket approval_key: {e}")
+                return False
+            
+            # WebSocket 연결 (KIS 공식 방식: /tryitout 경로 사용)
             self.websocket = await websockets.connect(self.websocket_url)
-            
-            # 인증 메시지 전송 (approval_key 필요)
-            if not self.approval_key:
-                self.logger.error("WebSocket approval_key not configured")
-                return False
-            
-            auth_message = {
-                "header": {
-                    "approval_key": self.approval_key,
-                    "custtype": "P",  # 개인
-                    "tr_type": "1",   # 등록
-                    "content-type": "utf-8"
-                },
-                "body": {
-                    "input": {
-                        "tr_id": "HDFSCNT0",
-                        "tr_key": ""
-                    }
-                }
-            }
-            
-            await self.websocket.send(json.dumps(auth_message))
-            
-            # 인증 응답 확인
-            response = await self.websocket.recv()
-            auth_result = json.loads(response)
-            
-            if auth_result.get("header", {}).get("tr_cd") != "0":
-                raise Exception(f"KIS WebSocket authentication failed: {auth_result}")
             
             self.status = AdapterStatus.CONNECTED
             self.stats['connections'] += 1
             
             # 메시지 수신 태스크 시작
-            asyncio.create_task(self._message_listener())
+            self._listener_task = asyncio.create_task(self._message_listener())
+            
+            # 대기 중인 구독 요청들 전송
+            await self._send_pending_subscriptions()
             
             self.logger.info("KIS WebSocket connected successfully")
             return True
@@ -201,6 +198,15 @@ class KISDataAdapter(BaseDataAdapter):
     async def disconnect(self) -> bool:
         """KIS WebSocket 연결 해제"""
         try:
+            # 재연결 태스크 취소
+            if self._reconnect_task and not self._reconnect_task.done():
+                self._reconnect_task.cancel()
+                
+            # 리스너 태스크 취소
+            if self._listener_task and not self._listener_task.done():
+                self._listener_task.cancel()
+            
+            # WebSocket 연결 종료
             if self.websocket:
                 await self.websocket.close()
                 self.websocket = None
@@ -216,44 +222,21 @@ class KISDataAdapter(BaseDataAdapter):
     async def subscribe_symbol(self, symbol: str) -> bool:
         """KIS 심볼 구독 (실시간 체결가)"""
         try:
-            if self.status != AdapterStatus.CONNECTED:
-                raise Exception("Not connected to KIS WebSocket")
+            # 구독 정보를 pending list에 추가
+            self.pending_subscriptions.append({
+                "symbol": symbol,
+                "tr_id": "H0STCNT0"  # 실시간 체결가
+            })
             
-            # 실시간 체결가 구독 (H0STCNT0)
-            subscribe_message = {
-                "header": {
-                    "approval_key": self.approval_key,
-                    "custtype": "P",  # 개인
-                    "tr_type": "1",   # 등록
-                    "content-type": "utf-8"
-                },
-                "body": {
-                    "input": {
-                        "tr_id": "H0STCNT0",  # 실시간 체결가
-                        "tr_key": symbol
-                    }
-                }
-            }
+            # 이미 연결되어 있으면 즉시 전송
+            if self.status == AdapterStatus.CONNECTED and self.websocket:
+                await self._send_pending_subscriptions()
             
-            await self.websocket.send(json.dumps(subscribe_message))
+            # 구독 목록에 추가
+            self.subscribed_symbols.add(symbol)
+            self.logger.info(f"Subscription request added for KIS symbol: {symbol}")
+            return True
             
-            # 응답 확인
-            response = await asyncio.wait_for(self.websocket.recv(), timeout=5)
-            result = json.loads(response)
-            
-            if result.get("header", {}).get("tr_cd") == "0":
-                self.subscribed_symbols.add(symbol)
-                self.subscription_ids[symbol] = result.get("header", {}).get("tr_id")
-                self.stats['messages_sent'] += 1
-                self.logger.info(f"Successfully subscribed to KIS symbol: {symbol}")
-                return True
-            else:
-                self.logger.error(f"KIS subscription failed for {symbol}: {result}")
-                return False
-            
-        except asyncio.TimeoutError:
-            self.logger.error(f"Timeout subscribing to KIS symbol: {symbol}")
-            return False
         except Exception as e:
             self.logger.error(f"Failed to subscribe to KIS symbol {symbol}: {e}")
             return False
@@ -344,6 +327,44 @@ class KISDataAdapter(BaseDataAdapter):
             self.logger.error(f"Failed to get KIS historical data for {symbol}: {e}")
             return []
     
+    async def _send_pending_subscriptions(self):
+        """대기 중인 구독 요청들을 전송"""
+        if not self.websocket or not self.pending_subscriptions:
+            return
+            
+        sent_symbols = []
+        
+        for subscription in self.pending_subscriptions[:]:  # 복사본으로 순회
+            try:
+                subscribe_message = {
+                    "header": {
+                        "approval_key": self.approval_key,
+                        "custtype": "P",  # 개인
+                        "tr_type": "1",   # 등록
+                        "content-type": "utf-8"
+                    },
+                    "body": {
+                        "input": {
+                            "tr_id": subscription["tr_id"],
+                            "tr_key": subscription["symbol"]
+                        }
+                    }
+                }
+                
+                await self.websocket.send(json.dumps(subscribe_message))
+                sent_symbols.append(subscription["symbol"])
+                self.pending_subscriptions.remove(subscription)
+                self.stats['messages_sent'] += 1
+                
+                # 잠시 대기하여 서버 부하 방지
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                self.logger.error(f"Failed to send subscription for {subscription['symbol']}: {e}")
+        
+        if sent_symbols:
+            self.logger.info(f"Sent subscriptions for symbols: {sent_symbols}")
+    
     async def _message_listener(self):
         """WebSocket 메시지 수신 리스너"""
         try:
@@ -359,6 +380,9 @@ class KISDataAdapter(BaseDataAdapter):
                 except websockets.exceptions.ConnectionClosed:
                     self.logger.warning("KIS WebSocket connection closed")
                     self.status = AdapterStatus.DISCONNECTED
+                    # 재연결 시도
+                    if not self._reconnect_task or self._reconnect_task.done():
+                        self._reconnect_task = asyncio.create_task(self._auto_reconnect())
                     break
                 except Exception as e:
                     self.logger.error(f"Error receiving KIS message: {e}")
@@ -367,64 +391,198 @@ class KISDataAdapter(BaseDataAdapter):
         except Exception as e:
             self.logger.error(f"KIS message listener error: {e}")
             self.status = AdapterStatus.ERROR
+            # 재연결 시도
+            if not self._reconnect_task or self._reconnect_task.done():
+                self._reconnect_task = asyncio.create_task(self._auto_reconnect())
     
     def _parse_realtime_message(self, message: str) -> Optional[Dict[str, Any]]:
-        """실시간 메시지 파싱 (KIS H0STCNT0 형식)"""
+        """실시간 메시지 파싱 (KIS 파이프 구분 형식)"""
         try:
-            data = json.loads(message)
+            # KIS WebSocket 메시지는 파이프(|) 구분 텍스트 형식
+            # 형식: "0|H0STCNT0|005930|데이터..."
+            if not message or len(message) < 3:
+                return None
             
-            # KIS 실시간 체결가 데이터 파싱
-            if "body" in data and "output" in data["body"]:
-                output = data["body"]["output"]
+            # 시스템 메시지 (JSON 형식) 처리
+            if message[0] == "{":
+                try:
+                    import json
+                    system_msg = json.loads(message)
+                    if system_msg.get("header", {}).get("tr_id") == "PINGPONG":
+                        self.logger.debug("Received PINGPONG")
+                        return None  # PINGPONG은 무시
+                    return None  # 다른 시스템 메시지도 무시
+                except json.JSONDecodeError:
+                    pass
                 
-                # 필수 필드 확인
-                symbol = output.get("MKSC_SHRN_ISCD")
-                current_price = output.get("STCK_PRPR")
+            # 첫 문자로 메시지 타입 확인 (0: 실시간 데이터, 1: 체결통보)
+            if message[0] not in ["0", "1"]:
+                return None
                 
-                if not symbol or not current_price:
-                    return None
+            parts = message.split("|")
+            if len(parts) < 4:
+                self.logger.debug(f"Invalid KIS message format: {message[:100]}")
+                return None
                 
-                # 시간 정보 파싱
-                time_str = output.get("STCK_CNTG_HOUR", "")  # HHMMSS 형식
-                if len(time_str) == 6:
-                    hour = time_str[:2]
-                    minute = time_str[2:4]
-                    second = time_str[4:6]
-                    today = datetime.now().date()
-                    timestamp = datetime.combine(today, datetime.strptime(f"{hour}:{minute}:{second}", "%H:%M:%S").time())
-                else:
-                    timestamp = datetime.now()
-                
-                return {
-                    "symbol": symbol,
-                    "timestamp": timestamp.isoformat(),
-                    "open": float(output.get("STCK_OPRC", current_price)),  # 시가
-                    "high": float(output.get("STCK_HGPR", current_price)),  # 고가
-                    "low": float(output.get("STCK_LWPR", current_price)),   # 저가
-                    "close": float(current_price),  # 현재가
-                    "volume": int(output.get("CNTG_VOL", 0)),  # 체결량
-                    "acc_volume": int(output.get("ACML_VOL", 0)),  # 누적거래량
-                    "change": float(output.get("PRDY_VRSS", 0)),  # 전일대비
-                    "change_rate": float(output.get("PRDY_CTRT", 0)),  # 전일대비율
-                    "bid_price": float(output.get("STCK_BIDP", 0)),  # 매수호가
-                    "ask_price": float(output.get("STCK_ASKP", 0)),  # 매도호가
-                    "trade_volume": int(output.get("CNTG_VOL", 0))  # 체결량
-                }
+            msg_type = parts[0]  # "0" 또는 "1"
+            tr_id = parts[1]     # "H0STCNT0" 등
+            symbol = parts[2]    # "005930" 등
+            data_part = parts[3] # 실제 데이터 부분
             
-            # TR_ID 확인으로 메시지 타입 구분
-            header = data.get("header", {})
-            tr_id = header.get("tr_id")
+            # 디버그: 원본 메시지 확인 (처음 몇 개만)
+            if not hasattr(self, '_raw_message_logged'):
+                self.logger.info(f"Raw KIS message format: msg_type={msg_type}, tr_id={tr_id}, symbol={symbol}")
+                self.logger.info(f"Data part preview: {data_part[:100]}...")
+                self._raw_message_logged = True
             
-            if tr_id == "H0STCNT0":  # 실시간 체결가
-                return self._parse_h0stcnt0_message(data)
+            # H0STCNT0 (실시간 체결가) 메시지 파싱
+            if tr_id == "H0STCNT0":
+                return self._parse_h0stcnt0_data(symbol, data_part)  # symbol을 명시적으로 전달
             elif tr_id == "H0STASP0":  # 실시간 호가
-                return self._parse_h0stasp0_message(data)
+                return self._parse_h0stasp0_data(symbol, data_part)
+            else:
+                self.logger.debug(f"Unsupported KIS TR_ID: {tr_id}")
+                return None
                 
         except Exception as e:
             self.logger.error(f"Failed to parse KIS realtime message: {e}")
-            self.logger.debug(f"Raw message: {message}")
+            return None
+    
+    def _parse_h0stcnt0_data(self, symbol: str, data: str) -> Optional[Dict[str, Any]]:
+        """H0STCNT0 (실시간 체결가) 데이터 파싱"""
+        try:
+            # 데이터는 캐럿(^) 구분
+            fields = data.split("^")
             
-        return None
+            if len(fields) < 10:
+                self.logger.debug(f"Insufficient H0STCNT0 fields: {len(fields)} for symbol {symbol}")
+                return None
+            
+            # KIS 실시간 체결가 필드 매핑 (공식 문서 기준)
+            # 0: MKSC_SHRN_ISCD (종목코드) 
+            # 1: STCK_CNTG_HOUR (체결시간-시)
+            # 2: STCK_CNTG_MINT (체결시간-분) 
+            # 3: STCK_CNTG_SCND (체결시간-초)
+            # 4: STCK_PRPR (현재가)
+            # 5: PRDY_VRSS (전일대비)
+            # 6: PRDY_VRSS_SIGN (전일대비부호)
+            # 7: PRDY_CTRT (전일대비율)
+            # 8: WGHN_AVRG_STCK_PRC (가중평균주식가격)
+            # 9: STCK_OPRC (시가)
+            # 10: STCK_HGPR (고가)
+            # 11: STCK_LWPR (저가)
+            # 12: ASKP1 (매도호가1)
+            # 13: BIDP1 (매수호가1)
+            # 14: CNTG_VOL (체결거래량)
+            # 15: ACML_VOL (누적거래량)
+            # 16: ACML_TR_PBMN (누적거래대금)
+            
+            current_price = fields[4] if len(fields) > 4 else "0"
+            
+            # 시간 정보 구성 (필드 1, 2, 3: 시, 분, 초)
+            try:
+                hour = fields[1] if len(fields) > 1 and fields[1] else "00"
+                minute = fields[2] if len(fields) > 2 and fields[2] else "00"
+                second = fields[3] if len(fields) > 3 and fields[3] else "00"
+                timestamp = datetime.now().replace(
+                    hour=int(hour), 
+                    minute=int(minute), 
+                    second=int(second),
+                    microsecond=0
+                )
+            except (ValueError, IndexError):
+                timestamp = datetime.now()
+                
+            result = {
+                "symbol": symbol,  # parts[2]에서 전달받은 심볼 사용
+                "timestamp": timestamp.isoformat(),
+                "close": float(current_price) if current_price else 0.0,
+                "volume": int(fields[14]) if len(fields) > 14 and fields[14] else 0,  # 체결거래량
+                "acc_volume": int(fields[15]) if len(fields) > 15 and fields[15] else 0,  # 누적거래량
+                "change": float(fields[5]) if len(fields) > 5 and fields[5] else 0.0,  # 전일대비
+                "change_rate": float(fields[7]) if len(fields) > 7 and fields[7] else 0.0,  # 전일대비율
+                "data_type": "realtime_price",
+                "source": "kis"
+            }
+            
+            # 디버그용 로그 (첫 번째 수신 메시지만)
+            if not hasattr(self, '_first_message_logged'):
+                self.logger.info(f"✅ First KIS message parsed successfully!")
+                self.logger.info(f"   Symbol: {symbol}")
+                self.logger.info(f"   Price: {current_price}")
+                self.logger.info(f"   Volume: {fields[14] if len(fields) > 14 else 'N/A'}")
+                self.logger.info(f"   Timestamp: {timestamp}")
+                self.logger.info(f"   Total fields received: {len(fields)}")
+                self._first_message_logged = True
+                
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Failed to parse H0STCNT0 data for {symbol}: {e}")
+            self.logger.error(f"Data fields: {data[:200]}...")
+            return None
+    
+    async def _auto_reconnect(self):
+        """자동 재연결"""
+        retry_count = 0
+        max_retries = 5
+        retry_delay = 5
+        
+        while retry_count < max_retries:
+            try:
+                self.logger.info(f"Attempting to reconnect... (attempt {retry_count + 1}/{max_retries})")
+                
+                # 기존 연결 정리
+                if self.websocket:
+                    await self.websocket.close()
+                    self.websocket = None
+                
+                # 재연결 시도
+                if await self.connect():
+                    self.logger.info("Successfully reconnected to KIS WebSocket")
+                    
+                    # 이전 구독 복원
+                    for symbol in self.subscribed_symbols:
+                        self.pending_subscriptions.append({
+                            "symbol": symbol,
+                            "tr_id": "H0STCNT0"
+                        })
+                    
+                    # 구독 재전송
+                    await self._send_pending_subscriptions()
+                    return
+                
+            except Exception as e:
+                self.logger.error(f"Reconnection attempt failed: {e}")
+            
+            retry_count += 1
+            if retry_count < max_retries:
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)  # 지수 백오프, 최대 60초
+        
+        self.logger.error(f"Failed to reconnect after {max_retries} attempts")
+        self.status = AdapterStatus.ERROR
+    
+    def _parse_h0stasp0_data(self, symbol: str, data: str) -> Optional[Dict[str, Any]]:
+        """H0STASP0 (실시간 호가) 데이터 파싱"""
+        try:
+            fields = data.split("^")
+            if len(fields) < 20:
+                return None
+                
+            # 호가 데이터 파싱 (매도호가1, 매수호가1 등)
+            return {
+                "symbol": symbol,
+                "timestamp": datetime.now().isoformat(),
+                "ask_price": float(fields[3]) if len(fields) > 3 and fields[3] else 0.0,
+                "bid_price": float(fields[13]) if len(fields) > 13 and fields[13] else 0.0,
+                "data_type": "realtime_quote",
+                "source": "kis"
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to parse H0STASP0 data: {e}")
+            return None
     
     def _parse_h0stcnt0_message(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """H0STCNT0 (실시간 체결가) 메시지 파싱"""

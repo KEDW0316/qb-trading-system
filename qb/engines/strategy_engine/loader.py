@@ -27,14 +27,16 @@ class StrategyLoader:
     런타임에 동적으로 로드/언로드할 수 있는 기능을 제공합니다.
     """
 
-    def __init__(self, strategies_dir: str = "strategies"):
+    def __init__(self, strategies_dir: str = "strategies", redis_manager=None):
         """
         전략 로더 초기화
         
         Args:
             strategies_dir: 전략 파일이 위치한 디렉토리 경로
+            redis_manager: Redis 연결 관리자
         """
         self.strategies_dir = strategies_dir
+        self.redis_manager = redis_manager
         self.available_strategies: Dict[str, Type[BaseStrategy]] = {}
         self.loaded_strategies: Dict[str, BaseStrategy] = {}
         self.strategy_modules: Dict[str, Any] = {}
@@ -170,12 +172,12 @@ class StrategyLoader:
             # 파라미터 검증 및 기본값 설정
             if params is None:
                 # 전략의 기본 파라미터 사용
-                temp_instance = strategy_class()
+                temp_instance = strategy_class(redis_manager=self.redis_manager)
                 params = temp_instance.get_default_parameters()
                 del temp_instance
             
-            # 전략 인스턴스 생성
-            strategy_instance = strategy_class(params)
+            # 전략 인스턴스 생성 (redis_manager 전달)
+            strategy_instance = strategy_class(params, self.redis_manager)
             
             # 파라미터 유효성 검증
             if not strategy_instance.validate_parameters(params):

@@ -270,9 +270,30 @@ class DataCollector:
     
     async def _initialize_adapters(self):
         """어댑터들 초기화"""
-        # 실제 어댑터 클래스들은 별도 파일에서 구현
-        # 여기서는 인터페이스만 정의
-        pass
+        try:
+            from .adapters import KISDataAdapter
+            
+            # KIS 어댑터 초기화
+            if 'kis' in self.config.adapters:
+                kis_config = {
+                    'mode': 'prod',  # 실제거래 모드
+                    'max_retries': 3,
+                    'retry_delay': 5,
+                    'approval_key': None  # WebSocket 승인키 (필요시 환경변수에서 로드)
+                }
+                
+                kis_adapter = KISDataAdapter(kis_config)
+                self.adapters['kis'] = kis_adapter
+                
+                # 연결 시도
+                if await kis_adapter.connect():
+                    self.logger.info("KIS adapter connected successfully")
+                else:
+                    self.logger.warning("KIS adapter connection failed, but continuing...")
+                    
+        except Exception as e:
+            self.logger.error(f"Failed to initialize adapters: {e}")
+            # 어댑터 초기화 실패해도 계속 진행
     
     async def _subscribe_symbols(self):
         """설정된 심볼들 구독"""
@@ -304,7 +325,7 @@ class DataCollector:
     
     async def _collection_worker(self, adapter_name: str, adapter: BaseDataAdapter):
         """개별 어댑터 수집 워커"""
-        self.logger.info(f"Collection worker started for {adapter_name}")
+        self.logger.info(f"🔄 Collection worker started for {adapter_name}")
         
         try:
             while self.running:
@@ -315,6 +336,10 @@ class DataCollector:
                 try:
                     # 어댑터에서 데이터 수집
                     messages = await adapter.collect_data()
+                    
+                    # 🔍 수집된 메시지 수 로그
+                    if messages:
+                        self.logger.debug(f"🔄 [{adapter_name}] Collected {len(messages)} messages")
                     
                     for message in messages:
                         await self._process_message(adapter_name, message)
@@ -339,14 +364,31 @@ class DataCollector:
             self.stats['messages_received'] += 1
             self.stats['last_message_time'] = datetime.now().isoformat()
             
-            # 데이터 정규화
+            # 호가 데이터 처리 (정규화 전에 먼저 처리)
+            message_type = raw_data.get('message_type')
+            if message_type == 'orderbook':
+                await self._save_orderbook_to_redis(raw_data)
+                # 호가 데이터는 별도 이벤트 발행 후 리턴
+                await self._publish_orderbook_event(raw_data, adapter_name)
+                self.stats['messages_processed'] += 1
+                return
+            
+            # 데이터 정규화 (체결 데이터만)
             normalized_data = await self.data_normalizer.normalize(raw_data, adapter_name)
+            
+            # 🔍 실시간 데이터 수신 로그
+            symbol = normalized_data.get('symbol', 'Unknown')
+            price = normalized_data.get('close', 0)
+            volume = normalized_data.get('volume', 0)
+            timestamp = normalized_data.get('timestamp', 'Unknown')
+            
+            self.logger.info(f"📊 [{adapter_name}] {symbol}: ₩{price:,} (거래량: {volume:,}) at {timestamp}")
             
             # 품질 검증
             if self.quality_checker:
                 is_valid, issues = await self.quality_checker.validate(normalized_data)
                 if not is_valid:
-                    self.logger.warning(f"Data quality issues from {adapter_name}: {issues}")
+                    self.logger.warning(f"❌ Data quality issues from {adapter_name}: {issues}")
                     return
             
             # Redis에 저장 (Rolling 업데이트)
@@ -356,6 +398,11 @@ class DataCollector:
             await self._publish_market_data_event(normalized_data, adapter_name)
             
             self.stats['messages_processed'] += 1
+            
+            # 🔍 처리 통계 로그 (100개마다)
+            if self.stats['messages_processed'] % 100 == 0:
+                self.logger.info(f"📈 DataCollector Stats: {self.stats['messages_processed']} processed, "
+                               f"{self.stats['messages_failed']} failed from {adapter_name}")
             
         except Exception as e:
             self.logger.error(f"Failed to process message from {adapter_name}: {e}")
@@ -393,8 +440,34 @@ class DataCollector:
             self.logger.error(f"Failed to save data to Redis: {e}")
             raise
     
+    async def _save_orderbook_to_redis(self, data: Dict[str, Any]):
+        """호가 데이터를 Redis에 저장"""
+        try:
+            symbol = data['symbol']
+            
+            # 호가 데이터만 저장
+            orderbook_data = {
+                'timestamp': data['timestamp'],
+                'bid_price': data.get('bid_price', 0),
+                'ask_price': data.get('ask_price', 0),
+                'bid_volume': data.get('bid_volume', 0),
+                'ask_volume': data.get('ask_volume', 0)
+            }
+            
+            await asyncio.to_thread(
+                self.redis_manager.set_orderbook_data,
+                symbol,
+                orderbook_data
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save orderbook data to Redis: {e}")
+            raise
+    
     async def _publish_market_data_event(self, data: Dict[str, Any], source: str):
         """market_data_received 이벤트 발행"""
+        self.logger.info(f"📤 Publishing MARKET_DATA_RECEIVED event for {data['symbol']} = ₩{data['close']:,.0f}")
+        
         event = self.event_bus.create_event(
             EventType.MARKET_DATA_RECEIVED,
             source=f"DataCollector({source})",
@@ -406,6 +479,25 @@ class DataCollector:
                 'low': data['low'],
                 'close': data['close'],
                 'volume': data['volume'],
+                'source': source
+            }
+        )
+        
+        self.event_bus.publish(event)
+    
+    async def _publish_orderbook_event(self, data: Dict[str, Any], source: str):
+        """orderbook_received 이벤트 발행"""
+        event = self.event_bus.create_event(
+            EventType.MARKET_DATA_RECEIVED,  # 동일한 이벤트타입 사용 (호가도 시장데이터)
+            source=f"DataCollector({source})",
+            data={
+                'symbol': data['symbol'],
+                'timestamp': data['timestamp'],
+                'bid_price': data.get('bid_price', 0),
+                'ask_price': data.get('ask_price', 0),
+                'bid_volume': data.get('bid_volume', 0),
+                'ask_volume': data.get('ask_volume', 0),
+                'message_type': 'orderbook',
                 'source': source
             }
         )

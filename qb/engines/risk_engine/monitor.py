@@ -41,6 +41,10 @@ class RiskMonitor:
             'position_count': 0
         }
         
+        # 알림 스로틀링 - 같은 유형의 알림은 최소 30초 간격
+        self.last_alert_times: Dict[str, datetime] = {}
+        self.alert_cooldown_seconds = 30
+        
         logger.info("RiskMonitor initialized")
     
     async def update_metrics(self):
@@ -118,6 +122,22 @@ class RiskMonitor:
         except Exception as e:
             logger.error(f"Error updating PnL metrics: {e}")
     
+    def _should_send_alert(self, alert_type: str) -> bool:
+        """알림 스로틀링 체크"""
+        now = datetime.now()
+        last_alert_time = self.last_alert_times.get(alert_type)
+        
+        if last_alert_time is None:
+            self.last_alert_times[alert_type] = now
+            return True
+        
+        time_since_last = (now - last_alert_time).total_seconds()
+        if time_since_last >= self.alert_cooldown_seconds:
+            self.last_alert_times[alert_type] = now
+            return True
+        
+        return False
+    
     async def _check_risk_thresholds(self):
         """리스크 임계값 확인"""
         try:
@@ -127,19 +147,21 @@ class RiskMonitor:
                 max_exposure = self.config.get('max_total_exposure_ratio', 0.9)
                 
                 if exposure_ratio > max_exposure * 0.9:  # 90% 도달 시 경고
-                    await self._publish_risk_alert(
-                        f"높은 익스포저 비율: {exposure_ratio:.1%} (한도: {max_exposure:.1%})",
-                        "PORTFOLIO",
-                        "HIGH"
-                    )
+                    if self._should_send_alert("HIGH_EXPOSURE"):
+                        await self._publish_risk_alert(
+                            f"높은 익스포저 비율: {exposure_ratio:.1%} (한도: {max_exposure:.1%})",
+                            "PORTFOLIO",
+                            "HIGH"
+                        )
             
             # 리스크 점수 체크
             if self.metrics['risk_score'] > 0.8:
-                await self._publish_risk_alert(
-                    f"높은 리스크 점수: {self.metrics['risk_score']:.2f}",
-                    "RISK_SCORE",
-                    "HIGH"
-                )
+                if self._should_send_alert("HIGH_RISK_SCORE"):
+                    await self._publish_risk_alert(
+                        f"높은 리스크 점수: {self.metrics['risk_score']:.2f}",
+                        "RISK_SCORE",
+                        "HIGH"
+                    )
             
         except Exception as e:
             logger.error(f"Error checking risk thresholds: {e}")
@@ -157,7 +179,7 @@ class RiskMonitor:
                 'timestamp': datetime.now().isoformat()
             }
             
-            await self.redis_manager.set_hash("risk_metrics:current", metrics_data, ttl=3600)
+            self.redis_manager.set_hash("risk_metrics:current", metrics_data, ttl=3600)
             
         except Exception as e:
             logger.error(f"Error saving metrics: {e}")
@@ -241,8 +263,9 @@ class RiskMonitor:
             }
             
             # 이벤트 버스로 발행
+            from ...utils.event_bus import EventType
             event = self.event_bus.create_event(
-                'RISK_ALERT',
+                EventType.RISK_ALERT,
                 source="RiskMonitor",
                 data=alert_data
             )
@@ -260,11 +283,12 @@ class RiskMonitor:
         """알림 기록 저장"""
         try:
             alert_key = "risk_alerts:recent"
-            await self.redis_manager.list_push(alert_key, alert_data, max_items=100)
+            self.redis_manager.list_push(alert_key, alert_data, max_items=100)
             
             # 일별 알림 통계
             date_key = f"risk_alerts:daily:{datetime.now().strftime('%Y-%m-%d')}"
-            await self.redis_manager.increment(date_key, ttl=86400 * 7)  # 7일 보관
+            self.redis_manager.redis.incr(date_key)
+            self.redis_manager.redis.expire(date_key, 86400 * 7)  # 7일 보관
             
         except Exception as e:
             logger.error(f"Error storing alert: {e}")

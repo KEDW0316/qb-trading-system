@@ -16,7 +16,8 @@ from .base import (
     BaseBrokerClient, BaseOrderQueue, BasePositionManager, BaseCommissionCalculator
 )
 from ..strategy_engine.base import TradingSignal
-from ..event_bus import EnhancedEventBus, EventType, EventFilter
+from ..event_bus import EnhancedEventBus, EventFilter
+from ..event_bus.core import EventType
 from ..event_bus.adapters import OrderEventPublisher, EngineEventMixin
 from ...utils.redis_manager import RedisManager
 
@@ -72,10 +73,10 @@ class OrderEngine(EngineEventMixin):
         self._processing_lock = asyncio.Lock()
         
         # 이벤트 핸들러
-        self._event_handlers: Dict[str, Callable] = {
-            EventType.TRADING_SIGNAL.value: self._handle_trading_signal,
-            EventType.ORDER_EXECUTED.value: self._handle_order_executed,
-            EventType.MARKET_DATA_RECEIVED.value: self._handle_market_data,
+        self._event_handlers: Dict[EventType, Callable] = {
+            EventType.TRADING_SIGNAL: self._handle_trading_signal,
+            EventType.ORDER_EXECUTED: self._handle_order_executed,
+            EventType.MARKET_DATA_RECEIVED: self._handle_market_data,
         }
         
         logger.info("OrderEngine initialized")
@@ -99,11 +100,17 @@ class OrderEngine(EngineEventMixin):
             logger.info("OrderEngine started successfully")
             
             # 시작 이벤트 발행
-            await self.event_bus.publish(EventType.SYSTEM_STATUS.value, {
-                "component": "OrderEngine",
-                "status": "started",
-                "timestamp": datetime.now().isoformat()
-            })
+            from ..event_bus.core import Event
+            start_event = Event(
+                event_type=EventType.SYSTEM_STATUS,
+                source="OrderEngine",
+                timestamp=datetime.now(),
+                data={
+                    "component": "OrderEngine",
+                    "status": "started"
+                }
+            )
+            self.event_bus.publish(start_event)
             
         except Exception as e:
             logger.error(f"Failed to start OrderEngine: {e}")
@@ -127,11 +134,17 @@ class OrderEngine(EngineEventMixin):
             logger.info("OrderEngine stopped successfully")
             
             # 중지 이벤트 발행
-            await self.event_bus.publish(EventType.SYSTEM_STATUS.value, {
-                "component": "OrderEngine",
-                "status": "stopped",
-                "timestamp": datetime.now().isoformat()
-            })
+            from ..event_bus.core import Event
+            stop_event = Event(
+                event_type=EventType.SYSTEM_STATUS,
+                source="OrderEngine",
+                timestamp=datetime.now(),
+                data={
+                    "component": "OrderEngine",
+                    "status": "stopped"
+                }
+            )
+            self.event_bus.publish(stop_event)
             
         except Exception as e:
             logger.error(f"Error stopping OrderEngine: {e}")
@@ -153,19 +166,26 @@ class OrderEngine(EngineEventMixin):
                 if signal_data.get("timestamp") else datetime.now()
             )
             
-            logger.info(f"Processing trading signal: {signal.action} {signal.symbol} @ {signal.price}")
+            # 🔍 거래 신호 수신 로그
+            logger.info(f"💰 OrderEngine received signal: {signal.action} {signal.symbol} "
+                       f"@ ₩{signal.price:,} (confidence: {signal.confidence:.2f})")
             
             # 신호를 주문으로 변환
             order = await self._signal_to_order(signal)
             if order:
+                # 🔍 주문 생성 로그
+                logger.info(f"📋 Order created: {order.order_id} - {order.side.value} {order.quantity} "
+                           f"{order.symbol} @ ₩{order.price:,} ({order.order_type.value})")
+                
                 # 주문 사전 검증
                 if await self._validate_order(order):
                     # 주문 큐에 추가
                     await self.order_queue.add_order(order)
-                    logger.info(f"Order created and queued: {order.order_id}")
+                    logger.info(f"✅ Order queued successfully: {order.order_id}")
                 else:
-                    logger.warning(f"Order validation failed for signal: {signal.symbol}")
-            
+                    logger.warning(f"❌ Order validation FAILED for {signal.symbol} - Order rejected")
+            else:
+                logger.info(f"⏭️ No order created from signal (action: {signal.action})")
         except Exception as e:
             logger.error(f"Error handling trading signal: {e}")
             await self._publish_error("trading_signal_handling", str(e))
@@ -341,16 +361,22 @@ class OrderEngine(EngineEventMixin):
     async def _execute_order(self, order: Order):
         """주문 실행"""
         try:
-            logger.info(f"Executing order: {order.order_id} - {order.side.value} {order.quantity} {order.symbol}")
+            # 🔍 주문 실행 시작 로그
+            logger.info(f"🚀 EXECUTING ORDER: {order.order_id} - {order.side.value} {order.quantity} "
+                       f"{order.symbol} @ ₩{order.price:,}")
             
             # 주문 상태 업데이트
             order.update_status(OrderStatus.SUBMITTED)
             self._active_orders[order.order_id] = order
             
             # 브로커에 주문 제출
+            logger.info(f"📤 Submitting to broker: {order.order_id}")
             result = await self.broker_client.place_order(order)
             
             if result.success:
+                # 🔍 주문 성공 로그
+                logger.info(f"✅ ORDER PLACED SUCCESSFULLY! {order.order_id} - Broker ID: {result.broker_order_id}")
+                
                 # 성공 시 주문 이벤트 발행
                 await self.event_bus.publish(EventType.ORDER_PLACED.value, {
                     "order_id": order.order_id,
@@ -363,9 +389,10 @@ class OrderEngine(EngineEventMixin):
                     "strategy_name": order.strategy_name
                 })
                 
-                logger.info(f"Order placed successfully: {order.order_id}")
-                
             else:
+                # 🔍 주문 실패 로그
+                logger.error(f"❌ ORDER FAILED! {order.order_id} - {result.message} (Code: {result.error_code})")
+                
                 # 실패 시 처리
                 order.update_status(OrderStatus.FAILED)
                 self._active_orders.pop(order.order_id, None)

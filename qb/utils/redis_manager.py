@@ -39,6 +39,26 @@ class RedisManager:
             self.logger.error(f"Redis connection error: {e}")
             return False
             
+    def get(self, key: str) -> Optional[str]:
+        """기본 GET 연산"""
+        try:
+            result = self.redis.get(key)
+            return result.decode() if result else None
+        except Exception as e:
+            self.logger.error(f"Failed to get key {key}: {e}")
+            return None
+            
+    def set(self, key: str, value: str, ttl: int = None) -> bool:
+        """기본 SET 연산"""
+        try:
+            if ttl:
+                return self.redis.setex(key, ttl, value)
+            else:
+                return self.redis.set(key, value)
+        except Exception as e:
+            self.logger.error(f"Failed to set key {key}: {e}")
+            return False
+            
     def get_info(self) -> Dict[str, Any]:
         """Redis 서버 정보 조회"""
         try:
@@ -94,6 +114,48 @@ class RedisManager:
         except Exception as e:
             self.logger.error(f"Failed to get market data for {symbol}: {e}")
             return {}
+
+    def set_orderbook_data(self, symbol: str, orderbook_data: Dict[str, Any], ttl: int = 60) -> bool:
+        """실시간 호가 데이터 저장"""
+        try:
+            # 호가 데이터 처리
+            processed_data = {k.encode(): (json.dumps(v) if isinstance(v, (dict, list)) else str(v)).encode() 
+                             for k, v in orderbook_data.items()}
+            self.redis.hset(f"orderbook:{symbol}".encode(), mapping=processed_data)
+            if ttl > 0:
+                self.redis.expire(f"orderbook:{symbol}".encode(), ttl)  # 짧은 TTL (1분)
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to set orderbook data for {symbol}: {e}")
+            return False
+
+    def get_orderbook_data(self, symbol: str) -> Dict[str, Any]:
+        """실시간 호가 데이터 조회"""
+        try:
+            data = self.redis.hgetall(f"orderbook:{symbol}".encode())
+            # 바이트를 문자열로 변환하고 JSON 파싱 시도
+            decoded_data = {}
+            for k, v in data.items():
+                key = k.decode() if isinstance(k, bytes) else k
+                val_str = v.decode() if isinstance(v, bytes) else v
+                try:
+                    decoded_data[key] = json.loads(val_str)
+                except (json.JSONDecodeError, TypeError):
+                    decoded_data[key] = val_str
+            return decoded_data
+        except Exception as e:
+            self.logger.error(f"Failed to get orderbook data for {symbol}: {e}")
+            return {}
+
+    def get_best_bid_price(self, symbol: str) -> float:
+        """최우선 매수호가 조회 (매도 시 사용)"""
+        try:
+            orderbook = self.get_orderbook_data(symbol)
+            bid_price = orderbook.get('bid_price', 0)
+            return float(bid_price) if bid_price else 0.0
+        except Exception as e:
+            self.logger.error(f"Failed to get best bid price for {symbol}: {e}")
+            return 0.0
 
     # ==================== 캔들 데이터 관련 메서드 ====================
     
@@ -389,4 +451,134 @@ class RedisManager:
             return result
         except Exception as e:
             self.logger.error(f"Failed to get pattern memory usage for {pattern}: {e}")
+            return {}
+    
+    # ==================== OrderEngine에서 필요한 메서드들 ====================
+    
+    def list_push(self, key: str, data: Dict[str, Any], max_items: int = None) -> bool:
+        """리스트에 데이터 추가"""
+        try:
+            serialized_data = json.dumps(data)
+            self.redis.lpush(key, serialized_data)
+            # max_items가 지정된 경우 리스트 크기 제한
+            if max_items:
+                self.redis.ltrim(key, 0, max_items - 1)
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to push to list {key}: {e}")
+            return False
+    
+    def set_hash(self, key: str, data: Dict[str, Any], ttl: int = None) -> bool:
+        """해시에 데이터 설정"""
+        try:
+            # 모든 값을 문자열로 변환
+            string_data = {}
+            for field, value in data.items():
+                if isinstance(value, (dict, list)):
+                    string_data[field] = json.dumps(value)
+                else:
+                    string_data[field] = str(value)
+            
+            self.redis.hset(key, mapping=string_data)
+            
+            # TTL 설정
+            if ttl:
+                self.redis.expire(key, ttl)
+            
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to set hash {key}: {e}")
+            return False
+    
+    def get_hash(self, key: str) -> Optional[Dict[str, Any]]:
+        """해시 데이터 조회"""
+        try:
+            data = self.redis.hgetall(key)
+            if not data:
+                return None
+            
+            # bytes를 문자열로 변환
+            result = {}
+            for field, value in data.items():
+                field_str = field.decode() if isinstance(field, bytes) else field
+                value_str = value.decode() if isinstance(value, bytes) else value
+                
+                # JSON 파싱 시도
+                try:
+                    result[field_str] = json.loads(value_str)
+                except (json.JSONDecodeError, TypeError):
+                    result[field_str] = value_str
+                    
+            return result
+        except Exception as e:
+            self.logger.error(f"Failed to get hash {key}: {e}")
+            return None
+    
+    def hash_increment(self, key: str, field: str, increment: int = 1) -> int:
+        """해시 필드 값 증가"""
+        try:
+            return self.redis.hincrby(key, field, increment)
+        except Exception as e:
+            self.logger.error(f"Failed to increment hash field {key}:{field}: {e}")
+            return 0
+    
+    # ==================== Strategy Engine 호환성 메서드 ====================
+    
+    def get_data(self, key: str) -> Optional[Dict[str, Any]]:
+        """기존 StrategyEngine 호환성을 위한 메서드"""
+        try:
+            data = self.redis.get(key)
+            if data:
+                return json.loads(data.decode() if isinstance(data, bytes) else data)
+            return None
+        except Exception as e:
+            self.logger.error(f"Failed to get data for key {key}: {e}")
+            return None
+    
+    def generate_mock_indicators(self, symbol: str, price: float) -> Dict[str, float]:
+        """테스트용 Mock 기술 지표 생성 (MovingAverage1M5M 전략 호환)"""
+        try:
+            import random
+            
+            # 현재 가격 기준으로 Mock 지표 생성
+            base_price = price
+            
+            # 전략에서 신호 생성 가능하도록 조건 설정
+            # 현재가가 SMA보다 높거나 낮게 랜덤 설정 (신호 생성 확률 50%)
+            signal_bias = random.choice([0.98, 1.02])  # 매수 or 매도 신호 유도
+            
+            mock_indicators = {
+                # MovingAverage1M5M 전략 필수 지표들
+                'sma_3': base_price * signal_bias,  # 3분 이동평균 (신호생성용) - 전략에서 필요
+                'sma_5': base_price * signal_bias,  # 5분 이동평균 (신호생성용)
+                'avg_volume_5d': random.randint(50_000_000_000, 100_000_000_000),  # 5일 평균 거래대금 (500~1000억, 필터 통과)
+                'price_change_6m_max': base_price * 1.20,  # 6개월 최고가 (20% 상승, "끼"있는 종목 조건)
+                
+                # 추가 기술 지표들
+                'sma_20': base_price * (1 + random.uniform(-0.05, 0.05)),  # ±5% 변동
+                'ema_12': base_price * (1 + random.uniform(-0.03, 0.03)),  # ±3% 변동
+                'ema_26': base_price * (1 + random.uniform(-0.04, 0.04)),  # ±4% 변동
+                'rsi_14': random.uniform(30, 70),  # RSI는 30-70 사이
+                'macd': random.uniform(-500, 500),  # MACD
+                'macd_signal': random.uniform(-300, 300),  # MACD Signal
+                'bb_upper': base_price * 1.02,  # 볼린저 밴드 상단
+                'bb_lower': base_price * 0.98,  # 볼린저 밴드 하단
+                'volume_sma_20': random.randint(50000, 200000),  # 거래량 이평
+                'price_change_6m_min': base_price * 0.85,  # 6개월 최저가
+                'volatility_20d': random.uniform(0.15, 0.35),  # 20일 변동성
+                'atr_14': base_price * random.uniform(0.01, 0.03),  # ATR
+            }
+            
+            # get_data 방식과 호환되도록 JSON으로 저장 
+            indicators_key = f"indicators:{symbol}"
+            indicators_json = json.dumps(mock_indicators)
+            self.redis.set(indicators_key, indicators_json, ex=3600)  # 1시간 TTL
+            
+            signal_type = "BUY" if signal_bias > 1.0 else "SELL"
+            self.logger.info(f"🎭 Generated mock indicators for {symbol} (Signal: {signal_type}): SMA5=₩{mock_indicators['sma_5']:,.0f}, Current=₩{price:,.0f}, Volume={mock_indicators['avg_volume_5d']/1e9:.1f}B")
+            
+            return mock_indicators
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate mock indicators for {symbol}: {e}")
             return {} 

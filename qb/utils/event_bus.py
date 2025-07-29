@@ -121,7 +121,7 @@ class EventBus:
             message = json.dumps(event.to_dict())
             self.redis_manager.redis.publish(channel, message)
             self.event_stats['published'] += 1
-            self.logger.debug(f"Published event: {event.event_type.value} to channel: {channel}")
+            self.logger.info(f"📡 Published event: {event.event_type.value} to channel: {channel} (symbol: {event.data.get('symbol', 'N/A')})")
             return True
         except Exception as e:
             self.logger.error(f"Failed to publish event: {e}")
@@ -131,7 +131,12 @@ class EventBus:
     def subscribe(self, event_type: EventType, callback: Callable[[Event], None]) -> bool:
         """이벤트 구독"""
         try:
-            channel = f"event:{event_type.value}"
+            # EventType enum 또는 문자열 처리
+            if isinstance(event_type, EventType):
+                channel = f"event:{event_type.value}"
+            else:
+                # 문자열인 경우 직접 사용
+                channel = f"event:{event_type}"
             
             with self._lock:
                 if channel not in self.subscribers:
@@ -139,8 +144,9 @@ class EventBus:
                     self.pubsub.subscribe(channel)
                     
                 self.subscribers[channel].append(callback)
-                
-            self.logger.info(f"Subscribed to event: {event_type.value}")
+            
+            event_name = event_type.value if isinstance(event_type, EventType) else event_type
+            self.logger.info(f"Subscribed to event: {event_name}")
             return True
         except Exception as e:
             self.logger.error(f"Failed to subscribe to event: {e}")
@@ -149,7 +155,12 @@ class EventBus:
     def unsubscribe(self, event_type: EventType, callback: Callable[[Event], None]) -> bool:
         """이벤트 구독 해제"""
         try:
-            channel = f"event:{event_type.value}"
+            # EventType enum 또는 문자열 처리
+            if isinstance(event_type, EventType):
+                channel = f"event:{event_type.value}"
+            else:
+                # 문자열인 경우 직접 사용
+                channel = f"event:{event_type}"
             
             with self._lock:
                 if channel in self.subscribers and callback in self.subscribers[channel]:
@@ -159,8 +170,9 @@ class EventBus:
                     if not self.subscribers[channel]:
                         self.pubsub.unsubscribe(channel)
                         del self.subscribers[channel]
-                        
-            self.logger.info(f"Unsubscribed from event: {event_type.value}")
+            
+            event_name = event_type.value if isinstance(event_type, EventType) else event_type
+            self.logger.info(f"Unsubscribed from event: {event_name}")
             return True
         except Exception as e:
             self.logger.error(f"Failed to unsubscribe from event: {e}")
@@ -175,6 +187,7 @@ class EventBus:
                 message = self.pubsub.get_message(timeout=1.0)
                 if message and message['type'] == 'message':
                     self.event_stats['received'] += 1
+                    self.logger.info(f"📥 Received message on channel: {message['channel']}")
                     self._handle_message(message)
             except Exception as e:
                 self.logger.error(f"Error in event listener: {e}")
@@ -205,7 +218,22 @@ class EventBus:
     def _execute_callback(self, callback: Callable[[Event], None], event: Event):
         """콜백 실행"""
         try:
-            callback(event)
+            import asyncio
+            import inspect
+            
+            # async 함수인지 확인
+            if inspect.iscoroutinefunction(callback):
+                # 새로운 이벤트 루프에서 실행
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(callback(event))
+                finally:
+                    loop.close()
+            else:
+                # 동기 함수는 그대로 실행
+                callback(event)
+                
             self.event_stats['processed'] += 1
         except Exception as e:
             self.logger.error(f"Error executing callback for event {event.event_type.value}: {e}")

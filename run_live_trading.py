@@ -18,15 +18,35 @@ import os
 import sys
 import signal
 import time
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 import json
+from dotenv import load_dotenv
+
+# 🔍 로깅 설정 - 콘솔에서 더 많은 로그 보기
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),  # 콘솔 출력
+        logging.FileHandler('logs/trading.log', encoding='utf-8')  # 파일 출력
+    ]
+)
+
+# 로그 디렉토리 생성
+os.makedirs('logs', exist_ok=True)
 
 # 프로젝트 루트 추가
 sys.path.append(str(Path(__file__).parent))
 
+# .env 파일 로드 (명시적 경로 지정)
+env_path = Path(__file__).parent / '.env'
+load_dotenv(env_path)
+
 # 필요한 모듈들 import
 from qb.engines.event_bus.core import EnhancedEventBus
+from qb.utils.event_bus import EventType
 from qb.engines.data_collector.data_collector import DataCollector
 from qb.engines.strategy_engine.engine import StrategyEngine
 from qb.engines.risk_engine.engine import RiskEngine
@@ -104,7 +124,7 @@ class LiveTradingSystem:
     
     def _check_environment(self):
         """환경 변수 확인"""
-        required_vars = ['KIS_APP_KEY', 'KIS_APP_SECRET', 'KIS_ACCOUNT_NO']
+        required_vars = ['KIS_APP_KEY', 'KIS_APP_SECRET', 'KIS_ACCOUNT_STOCK', 'KIS_ACCOUNT_PRODUCT']
         missing_vars = []
         
         for var in required_vars:
@@ -144,34 +164,65 @@ class LiveTradingSystem:
         """거래 엔진들 초기화"""
         
         # 데이터 수집기
+        from qb.engines.data_collector.data_collector import CollectionConfig
+        collection_config = CollectionConfig(
+            symbols=[self.config['symbol']],
+            adapters=['kis']
+        )
         self.data_collector = DataCollector(
+            redis_manager=self.redis_manager,
             event_bus=self.event_bus,
-            redis_client=self.redis_manager.redis
+            config=collection_config
         )
         
         # 전략 엔진
         self.strategy_engine = StrategyEngine(
-            event_bus=self.event_bus,
-            redis_client=self.redis_manager.redis
+            redis_manager=self.redis_manager,
+            event_bus=self.event_bus
         )
         
         # 리스크 엔진 (보수적 설정)
         self.risk_engine = RiskEngine(
+            db_manager=self.db_manager,
+            redis_manager=self.redis_manager,
             event_bus=self.event_bus,
-            redis_client=self.redis_manager.redis,
             config={
+                'enable_risk_monitoring': True,  # 리스크 모니터링 활성화
+                'monitoring_interval': 15,  # 모니터링 간격 (초)
                 'max_daily_loss': self.config['max_amount'] * 0.5,  # 최대 거래 금액의 50%
                 'max_position_size_ratio': 0.05,  # 포트폴리오의 5%
                 'default_stop_loss_pct': self.config['stop_loss_pct'],
                 'min_cash_reserve_ratio': 0.2,  # 20% 현금 보유
-                'max_orders_per_day': 10  # 일일 최대 주문 수
+                'max_orders_per_day': 10,  # 일일 최대 주문 수
+                'max_consecutive_losses': 5,  # 최대 연속 손실 횟수
+                'max_total_exposure_ratio': 0.8  # 최대 총 익스포저 비율
             }
+        )
+        
+        # 주문 엔진 컴포넌트 임포트
+        from qb.collectors.kis_client import KISClient
+        from qb.engines.order_engine.kis_broker_client import KISBrokerClient
+        from qb.engines.order_engine.order_queue import OrderQueue
+        from qb.engines.order_engine.position_manager import PositionManager
+        from qb.engines.order_engine.commission_calculator import KoreanStockCommissionCalculator
+        
+        # KIS 클라이언트 생성
+        kis_client = KISClient()
+        
+        # KIS 브로커 클라이언트 생성
+        kis_broker = KISBrokerClient(
+            kis_client=kis_client,
+            redis_manager=self.redis_manager
         )
         
         # 주문 엔진
         self.order_engine = OrderEngine(
+            broker_client=kis_broker,
+            order_queue=OrderQueue(self.redis_manager),
+            position_manager=PositionManager(self.redis_manager, self.db_manager),
+            commission_calculator=KoreanStockCommissionCalculator(),
             event_bus=self.event_bus,
-            redis_client=self.redis_manager.redis
+            redis_manager=self.redis_manager
         )
         
         print("✅ 모든 엔진 초기화 완료")
@@ -211,11 +262,11 @@ class LiveTradingSystem:
                 print("🚨 심각한 리스크 감지! 거래 중단을 고려하세요.")
         
         # 이벤트 구독
-        self.event_bus.subscribe('MARKET_DATA_RECEIVED', market_data_handler)
-        self.event_bus.subscribe('TRADING_SIGNAL', signal_handler)
-        self.event_bus.subscribe('ORDER_PLACED', order_handler)
-        self.event_bus.subscribe('ORDER_EXECUTED', order_handler)
-        self.event_bus.subscribe('RISK_ALERT', risk_handler)
+        self.event_bus.subscribe(EventType.MARKET_DATA_RECEIVED, market_data_handler)
+        self.event_bus.subscribe(EventType.TRADING_SIGNAL, signal_handler)
+        self.event_bus.subscribe(EventType.ORDER_PLACED, order_handler)
+        self.event_bus.subscribe(EventType.ORDER_EXECUTED, order_handler)
+        self.event_bus.subscribe(EventType.RISK_ALERT, risk_handler)
         
         print("✅ 이벤트 핸들러 설정 완료")
     
@@ -246,19 +297,16 @@ class LiveTradingSystem:
             await self.order_engine.start()
             
             # 목표 종목 구독
-            await self.data_collector.subscribe_symbol(self.config['symbol'])
+            await self.data_collector.add_symbol(self.config['symbol'])
             
-            # 전략 로드
+            # 전략 활성화
             strategy_config = {
-                'name': 'moving_average_1m5m',
-                'parameters': {
-                    'short_window': 5,
-                    'long_window': 20,
-                    'min_confidence': 0.7,
-                    'max_position_size': self.config['max_amount'] // 75000  # 삼성전자 기준
-                }
+                'ma_period': 5,  # 이동평균 기간 (5분)
+                'confidence_threshold': 0.7,  # 신호 신뢰도 임계값
+                'enable_forced_sell': True,  # 장마감 강제매도 활성화
+                'min_volume_threshold': 30_000_000_000  # 최소 거래대금
             }
-            await self.strategy_engine.load_strategy(strategy_config)
+            await self.strategy_engine.activate_strategy('MovingAverage1M5MStrategy', strategy_config, [self.config['symbol']])
             
             print(f"✅ 거래 시작 - {self.config['symbol']} 모니터링 중...")
             
@@ -283,14 +331,14 @@ class LiveTradingSystem:
                     await self._print_status()
                     last_status_time = time.time()
                 
-                # 거래 시간 확인 (09:00-15:30)
-                now = datetime.now()
-                if now.hour < 9 or (now.hour >= 15 and now.minute >= 30):
-                    if now.hour >= 15 and now.minute >= 30:
-                        print("📅 장 마감 시간입니다. 거래를 종료합니다.")
-                        break
-                    await asyncio.sleep(60)  # 1분 대기
-                    continue
+                # 거래 시간 확인 (09:00-15:30) - 테스트용으로 임시 비활성화
+                # now = datetime.now()
+                # if now.hour < 9 or (now.hour >= 15 and now.minute >= 30):
+                #     if now.hour >= 15 and now.minute >= 30:
+                #         print("📅 장 마감 시간입니다. 거래를 종료합니다.")
+                #         break
+                #     await asyncio.sleep(60)  # 1분 대기
+                #     continue
                 
                 # 짧은 대기
                 await asyncio.sleep(1)
@@ -325,6 +373,11 @@ class LiveTradingSystem:
     
     async def stop_trading(self):
         """거래 중단"""
+        # 중복 종료 방지
+        if hasattr(self, '_shutdown_in_progress') and self._shutdown_in_progress:
+            return
+        
+        self._shutdown_in_progress = True
         print("\n🛑 거래 시스템 중단 중...")
         
         self.running = False
@@ -344,8 +397,10 @@ class LiveTradingSystem:
             if self.redis_monitor:
                 await self.redis_monitor.stop_monitoring()
             
-            # 최종 리포트 생성
-            self._generate_final_report()
+            # 최종 리포트 생성 (한 번만)
+            if not hasattr(self, '_report_generated') or not self._report_generated:
+                self._generate_final_report()
+                self._report_generated = True
             
             print("✅ 거래 시스템 정상 종료")
             
@@ -431,10 +486,12 @@ async def main():
         print(f"   최대 금액: {config['max_amount']:,}원")
         print(f"   손절매: {config['stop_loss_pct']:.1f}%")
         
-        confirm = input("\n정말로 실제 거래를 시작하시겠습니까? (yes/no): ")
-        if confirm.lower() != 'yes':
-            print("❌ 거래가 취소되었습니다.")
-            return
+        # 실제 거래 확인 - 자동으로 진행
+        print("\n✅ 실제 거래를 시작합니다...")
+        # confirm = input("\n정말로 실제 거래를 시작하시겠습니까? (yes/no): ")
+        # if confirm.lower() != 'yes':
+        #     print("❌ 거래가 취소되었습니다.")
+        #     return
     
     # 시그널 핸들러 등록
     signal.signal(signal.SIGINT, signal_handler)

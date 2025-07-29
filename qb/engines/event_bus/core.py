@@ -81,8 +81,37 @@ class EnhancedEventBus(_OriginalEventBus):
         # For now, ignore priority and ttl
         return super().create_event(event_type, source, data, correlation_id)
     
-    def publish(self, event: Event) -> bool:
-        """Publish event with enhanced tracking"""
+    def publish(self, event_or_type, data=None) -> bool:
+        """Publish event with enhanced tracking - supports both Event objects and (type, data) pattern"""
+        # Handle both Event objects and (event_type, data) pattern
+        if isinstance(event_or_type, Event):
+            event = event_or_type
+        else:
+            # Create Event object from event_type and data
+            from datetime import datetime
+            
+            # Handle string event types - try to convert to EventType enum
+            if isinstance(event_or_type, str):
+                # Try to find matching EventType, fallback to SYSTEM_STATUS if not found
+                try:
+                    # Check if it's already a valid EventType value
+                    event_type = next((et for et in EventType if et.value == event_or_type), None)
+                    if event_type is None:
+                        # Try to match by name
+                        event_type = getattr(EventType, event_or_type.upper(), EventType.SYSTEM_STATUS)
+                except:
+                    event_type = EventType.SYSTEM_STATUS
+            else:
+                event_type = event_or_type
+            
+            event = Event(
+                event_type=event_type,
+                source="EnhancedEventBus",
+                timestamp=datetime.now(),
+                data=data or {},
+                correlation_id=None
+            )
+        
         result = super().publish(event)
         
         # Track by event type

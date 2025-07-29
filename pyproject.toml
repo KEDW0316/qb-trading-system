@@ -1,0 +1,35 @@
+[project]
+name = "qb"
+version = "0.1.0"
+description = "Quantitative Trading Bot"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Web and async
+    "aiohttp>=3.9.0",
+    "requests>=2.31.0",
+    "websockets>=12.0",
+    "urllib3>=2.0.0",
+    # Data processing
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.13.0",
+    "ta-lib>=0.4.0",
+    # Database
+    "redis>=5.0.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.0",
+    # Testing
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    # Utils
+    "python-dotenv>=1.0.0",
+    "pytz>=2023.3",
+    "python-dateutil>=2.8.0",
+    "lz4>=4.0.0",
+    "python-snappy>=0.6.0",
+    # Development
+    "superclaude>=3.0.0.2",
+    "msgpack>=1.1.1",
+]

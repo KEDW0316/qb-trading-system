@@ -65,14 +65,16 @@ class BaseStrategy(ABC):
     각 전략은 시장 데이터와 기술적 지표를 분석하여 거래 신호를 생성합니다.
     """
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
+    def __init__(self, params: Optional[Dict[str, Any]] = None, redis_manager=None):
         """
         전략 초기화
         
         Args:
             params: 전략 파라미터 딕셔너리
+            redis_manager: Redis 연결 관리자
         """
         self.params = params or {}
+        self.redis_manager = redis_manager
         self.name = self.__class__.__name__
         self.created_at = datetime.now()
         self.last_signal_time: Optional[datetime] = None
