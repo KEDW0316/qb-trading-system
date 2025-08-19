@@ -88,7 +88,10 @@ class StrategyEngine(EngineEventMixin):
             # 전략 디렉토리 스캔
             await self._discover_strategies()
             
-            logger.info("StrategyEngine started successfully")
+            # 실시간 매도 조건 체크 루프 시작
+            asyncio.create_task(self._realtime_sell_check_loop())
+            
+            logger.info("StrategyEngine started successfully with realtime sell monitoring")
             
         except Exception as e:
             logger.error(f"Error starting StrategyEngine: {e}")
@@ -198,13 +201,20 @@ class StrategyEngine(EngineEventMixin):
                     indicators = data
                 
                 # 타입 변환 (문자열 -> 숫자)
+                # timestamp 및 메타데이터 필드는 변환 제외
+                non_numeric_fields = {'calculated_at', 'timestamp', 'metadata', 'symbol', 'timeframe'}
+                
                 converted_indicators = {}
                 for key, value in indicators.items():
-                    try:
-                        converted_indicators[key] = float(value)
-                    except (ValueError, TypeError):
-                        logger.warning(f"Could not convert indicator {key}={value} to float")
+                    if key in non_numeric_fields:
+                        # 메타데이터 필드는 원본 값 유지
                         converted_indicators[key] = value
+                    else:
+                        try:
+                            converted_indicators[key] = float(value)
+                        except (ValueError, TypeError):
+                            logger.warning(f"Could not convert indicator {key}={value} to float")
+                            converted_indicators[key] = value
                 
                 logger.info(f"🔍 [DEBUG] Converted indicators for {symbol}: {converted_indicators}")
                 
@@ -571,6 +581,106 @@ class StrategyEngine(EngineEventMixin):
         except Exception as e:
             logger.error(f"Error reloading strategy {strategy_name}: {e}")
             return False
+
+    async def _realtime_sell_check_loop(self):
+        """실시간 매도 조건 체크 루프 (3초마다 실행)"""
+        logger.info("🔄 실시간 매도 조건 체크 루프 시작")
+        
+        while self.is_running:
+            try:
+                # 모든 활성 전략의 포지션 체크
+                for strategy_name, strategy in self.active_strategies.items():
+                    if hasattr(strategy, 'current_position') and strategy.current_position:
+                        await self._check_realtime_sell_conditions(strategy_name, strategy)
+                
+                # 3초 대기 (호가 업데이트 주기와 동일)
+                await asyncio.sleep(3)
+                
+            except asyncio.CancelledError:
+                logger.info("🛑 실시간 매도 조건 체크 루프 종료")
+                break
+            except Exception as e:
+                logger.error(f"❌ 실시간 매도 체크 오류: {e}")
+                await asyncio.sleep(1)  # 오류 시 짧은 대기
+    
+    async def _check_realtime_sell_conditions(self, strategy_name: str, strategy):
+        """실시간 매도 조건 체크"""
+        try:
+            for symbol in list(strategy.current_position.keys()):
+                # 현재 시장 데이터 조회
+                market_data = await asyncio.to_thread(self.redis.get_market_data, symbol)
+                if not market_data:
+                    continue
+                
+                current_price = float(market_data.get('close', 0))
+                if current_price <= 0:
+                    continue
+                
+                # 기술 지표 조회
+                indicators = await self.fetch_indicators(symbol, current_price)
+                if not indicators:
+                    continue
+                
+                ma_5m = indicators.get(f"sma_{strategy.params.get('ma_period', 5)}")
+                if ma_5m is None:
+                    continue
+                
+                # 매도 조건 체크: 현재가 <= 5분 평균
+                if current_price <= ma_5m:
+                    # 최신 호가로 매도 신호 생성
+                    sell_signal = await strategy._generate_sell_signal(
+                        symbol, current_price, datetime.now(), ma_5m
+                    )
+                    
+                    if sell_signal:
+                        logger.info(f"🚨 [REALTIME SELL] {strategy_name}: {symbol} "
+                                  f"현재가 ₩{current_price:,.0f} <= MA ₩{ma_5m:,.0f}")
+                        
+                        # 매도 신호 발행
+                        await self._publish_trading_signal(sell_signal)
+                        
+                        # 통계 업데이트
+                        self.total_signals_generated += 1
+                        
+        except Exception as e:
+            logger.error(f"❌ {strategy_name} 실시간 매도 체크 실패: {e}")
+    
+    async def _publish_trading_signal(self, signal):
+        """거래 신호 발행"""
+        try:
+            # TradingSignalPublisher를 통해 신호 발행
+            success = self.signal_publisher.publish_trading_signal(
+                symbol=signal.symbol,
+                action=signal.action,
+                price=signal.price,
+                quantity=signal.quantity or 0,
+                strategy_name="MovingAverage1M5MStrategy",
+                confidence=signal.confidence,
+                metadata=signal.metadata
+            )
+            
+            if success:
+                # 신호 히스토리에 추가
+                self.signal_history.append({
+                    'timestamp': signal.timestamp.isoformat(),
+                    'action': signal.action,
+                    'symbol': signal.symbol,
+                    'price': signal.price,
+                    'confidence': signal.confidence,
+                    'reason': signal.reason,
+                    'source': 'realtime_sell_check'
+                })
+                
+                # 최근 100개만 유지
+                if len(self.signal_history) > 100:
+                    self.signal_history.pop(0)
+                    
+                logger.info(f"📡 실시간 매도 신호 발행 성공: {signal.symbol} @ ₩{signal.price:,.0f}")
+            else:
+                logger.error(f"❌ 실시간 매도 신호 발행 실패: {signal.symbol}")
+                
+        except Exception as e:
+            logger.error(f"❌ 매도 신호 발행 오류: {e}")
 
     def __str__(self) -> str:
         return f"StrategyEngine(running={self.is_running}, active={len(self.active_strategies)})"

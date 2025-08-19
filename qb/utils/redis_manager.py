@@ -527,10 +527,27 @@ class RedisManager:
     def get_data(self, key: str) -> Optional[Dict[str, Any]]:
         """기존 StrategyEngine 호환성을 위한 메서드"""
         try:
-            data = self.redis.get(key)
-            if data:
-                return json.loads(data.decode() if isinstance(data, bytes) else data)
-            return None
+            # indicators 키의 경우 Hash 타입으로 접근
+            if key.startswith('indicators:'):
+                data = self.redis.hgetall(key)
+                if data:
+                    # Hash 데이터를 딕셔너리로 변환
+                    result = {}
+                    for field, value in data.items():
+                        field_name = field.decode() if isinstance(field, bytes) else field
+                        field_value = value.decode() if isinstance(value, bytes) else value
+                        try:
+                            result[field_name] = json.loads(field_value)
+                        except (json.JSONDecodeError, TypeError):
+                            result[field_name] = field_value
+                    return result
+                return None
+            else:
+                # 기타 키는 기존 방식 유지
+                data = self.redis.get(key)
+                if data:
+                    return json.loads(data.decode() if isinstance(data, bytes) else data)
+                return None
         except Exception as e:
             self.logger.error(f"Failed to get data for key {key}: {e}")
             return None

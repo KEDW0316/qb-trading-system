@@ -108,6 +108,10 @@ class DatabaseManager:
             self.logger.error(f"Database ping failed: {e}")
             return False
     
+    def test_connection(self) -> bool:
+        """데이터베이스 연결 테스트 (ping과 동일한 기능)"""
+        return self.ping()
+    
     def get_connection_info(self) -> Dict[str, Any]:
         """데이터베이스 연결 정보 반환"""
         if not self.engine:
