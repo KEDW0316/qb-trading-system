@@ -1,12 +1,8 @@
-# Byte-compiled / optimized / DLL files
+# === Python ===
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
-
-# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -20,67 +16,68 @@ parts/
 sdist/
 var/
 wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
 
-# PyInstaller
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-.python-version
-
-# Environments
-.env
-.venv
-env/
+# === uv 가상환경 ===
+.venv/
 venv/
 ENV/
-env.bak/
-venv.bak/
+env/
 
-# IDE specific files
-.idea/
+# === 환경변수 및 설정 ===
+.env
+.env.local
+.env.*.local
+config/local_config.yaml
+
+# === KIS API 관련 보안 파일 ===
+kis_token_*.json
+*.pem
+*.key
+*.crt
+api_keys.txt
+secrets/
+
+# === 데이터베이스 및 데이터 ===
+data/db/*.db
+data/db/*.sqlite3
+data/cache/
+*.db
+*.sqlite
+*.sqlite3
+
+# === 로그 파일 ===
+logs/
+*.log
+*.log.*
+
+# === 테스트 결과 ===
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# === IDE 설정 ===
 .vscode/
+.idea/
 *.swp
 *.swo
 *~
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
 
-# OS specific files
+# === 백테스팅 결과 ===
+backtest_results/
+reports/
+*.png
+*.pdf
+*.xlsx
+
+# === 운영체제 ===
 .DS_Store
 .DS_Store?
 ._*
@@ -89,30 +86,14 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-# Logs
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-dev-debug.log
-
-# Dependency directories
-node_modules/
-
-# Project specific
-kis_reference/
-config/trading_mode.json
-*.db
-
-# Temporary files
+# === 임시 파일 ===
+tmp/
+temp/
 *.tmp
 *.temp
-*.bak
 
-# Redis dump
-dump.rdb
+# === uv 관련 파일 ===
+.python-version
+uv.lock
 
-# MacOS
-.AppleDouble
-.LSOverride
+/kis_reference

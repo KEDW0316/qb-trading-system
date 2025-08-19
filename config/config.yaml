@@ -1,0 +1,135 @@
+# KIS 자동매매 프로그램 기본 설정
+
+# 시장 시간 설정
+market:
+  # 장 운영시간 (KST)
+  trading_hours:
+    start: "09:00:00"
+    end: "15:30:00"
+    lunch_start: "12:00:00"  # 점심시간 시작 (선택사항)
+    lunch_end: "13:00:00"    # 점심시간 종료
+  
+  # 휴장일 체크
+  exclude_weekends: true
+  exclude_holidays: true
+  holiday_api: "한국거래소"  # 공휴일 API 연동 (추후 구현)
+
+# 데이터 처리 설정
+data:
+  # 차트 데이터 요청 설정
+  daily_chart_period: 100      # 일봉 조회 기간 (일)
+  minute_chart_period: 60      # 분봉 조회 기간 (분)
+  
+  # 실시간 데이터 버퍼 크기
+  realtime_buffer_size: 1000   # 실시간 데이터 메모리 버퍼
+  
+  # 데이터 정리 주기
+  data_cleanup_interval: 3600  # 1시간마다 오래된 데이터 정리
+
+# 매매 전략 설정
+strategy:
+  # 기본 전략 타입
+  default_strategy: "realtime_rsi"
+  
+  # 전략별 설정
+  realtime_rsi:
+    # 기술적 지표
+    rsi_period: 14
+    rsi_oversold: 30
+    rsi_overbought: 70
+    ma_short: 5
+    ma_long: 20
+    
+    # 실시간 판단 기준
+    bid_ask_spread_threshold: 0.01  # 호가 스프레드 1% 이내
+    volume_surge_ratio: 1.5         # 평소 거래량 대비 1.5배
+    
+    # 신호 강도 기준
+    min_signal_strength: 0.6        # 최소 신호 강도
+    signal_timeout: 300             # 신호 유효시간 (초)
+
+# 리스크 관리 설정
+risk:
+  # 포지션 관리
+  max_positions: 3                 # 최대 동시 보유 종목 수
+  max_position_size: 0.1           # 종목당 최대 10%
+  
+  # 손익 관리
+  stop_loss_pct: -0.05            # 손절 -5%
+  take_profit_pct: 0.10           # 익절 +10%
+  trailing_stop_pct: 0.02         # 추적 손절 2%
+  
+  # 일일 제한
+  max_daily_loss: -0.03           # 일일 최대 손실 -3%
+  max_daily_trades: 10            # 일일 최대 거래 횟수
+  
+  # 거래량 체크
+  min_volume_ratio: 0.5           # 최소 거래량 (평균 대비)
+
+# 모니터링 설정
+monitoring:
+  # 헬스체크 간격
+  health_check_interval: 60       # 1분마다 시스템 상태 체크
+  
+  # 성과 측정
+  performance_report_interval: 3600  # 1시간마다 성과 리포트
+  
+  # 알림 설정
+  notifications:
+    trade_execution: true         # 매매 실행 알림
+    error_events: true            # 에러 발생 알림
+    daily_summary: true           # 일일 요약 알림
+    system_alerts: true           # 시스템 경고 알림
+
+# API 설정
+api:
+  # 요청 제한 설정 (KIS 제한 대응)
+  rate_limit:
+    max_calls_per_second: 18      # 안전 마진을 둔 초당 호출 제한
+    burst_limit: 50               # 버스트 제한
+    backoff_multiplier: 1.5       # 백오프 배수
+    max_retry_attempts: 3         # 최대 재시도 횟수
+  
+  # 타임아웃 설정
+  timeouts:
+    connect_timeout: 10           # 연결 타임아웃 (초)
+    read_timeout: 30              # 읽기 타임아웃 (초)
+    total_timeout: 60             # 전체 타임아웃 (초)
+  
+  # WebSocket 설정
+  websocket:
+    reconnect_interval: 5         # 재연결 시도 간격 (초)
+    ping_interval: 30             # 핑 간격 (초)
+    max_reconnect_attempts: 10    # 최대 재연결 시도
+
+# 로깅 설정
+logging:
+  # 로그 레벨별 설정
+  levels:
+    root: INFO
+    kis_auth: DEBUG
+    market_data: INFO
+    strategy: INFO
+    trading: INFO
+  
+  # 파일 로테이션
+  rotation:
+    max_size: "10 MB"
+    backup_count: 10
+    compression: "gz"
+  
+  # 로그 포맷
+  format: "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} | {message}"
+
+# 개발/디버깅 설정
+development:
+  # 디버그 모드
+  debug_mode: false
+  
+  # 테스트 설정
+  test_mode: true                 # 실제 주문 없이 시뮬레이션
+  mock_data: false                # 가짜 데이터 사용 여부
+  
+  # 성능 프로파일링
+  profiling_enabled: false
+  profile_output_dir: "logs/profiles"

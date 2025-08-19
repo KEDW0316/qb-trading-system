@@ -1,3 +1,0 @@
-"""
-QuickBit Utility Scripts
-"""
