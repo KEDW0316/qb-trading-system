@@ -423,14 +423,23 @@ class BithumbAPI:
     
     def place_order(self, market: str, side: str, order_type: str, price: float, volume: float) -> Dict[str, Any]:
         """주문하기"""
-        # Bithumb API 요구사항에 맞게 파라미터 조정 (공식 예제와 동일한 순서)
+        # Bithumb API 요구사항에 맞게 파라미터 조정
         params = {
             "market": market,
             "side": side,
             "volume": round(volume, 8),  # 수량을 8자리 소수점으로 조정
-            "price": int(price),  # 가격을 정수로 변환
             "ord_type": order_type  # order_type -> ord_type으로 변경
         }
+        
+        # 시장가 주문인 경우 price를 0으로 설정
+        if order_type == "market":
+            params["price"] = "0"  # 시장가는 문자열 "0"
+        else:
+            params["price"] = int(price)  # 지정가는 정수
+        
+        # 디버깅을 위한 로그 추가
+        print(f"🔍 주문 파라미터: {params}")
+        
         return self._make_private_request("/v1/orders", params, method="POST")
     
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
