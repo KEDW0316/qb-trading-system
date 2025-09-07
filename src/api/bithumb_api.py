@@ -11,7 +11,8 @@ from typing import Dict, Optional, Any, Callable
 from urllib.parse import urlencode
 from dotenv import load_dotenv
 
-# .env 파일 로드
+# .env 파일 
+# 로드
 load_dotenv()
 
 
@@ -70,55 +71,35 @@ class BithumbWebSocket:
         except Exception as e:
             print(f"Private WebSocket 연결 실패: {e}")
             return False
-    
+
+    async def _send_subscription(self, sub_type: str, codes: list, callback: Optional[Callable] = None):
+        """Helper to send a subscription message to the public WebSocket."""
+        if not self.public_ws:
+            print(f"Public WebSocket에 먼저 연결하세요. {sub_type} 구독 실패.")
+            return
+
+        message = [
+            {"ticket": f"{sub_type}_{uuid.uuid4().hex[:8]}"},
+            {"type": sub_type, "codes": codes}
+        ]
+
+        await self.public_ws.send(json.dumps(message))
+        if callback:
+            self.callbacks[sub_type] = callback
+        print(f"{sub_type.capitalize()} 구독 시작: {codes}")
+
     async def subscribe_ticker(self, codes: list, callback: Callable = None):
         """현재가 구독"""
-        if not self.public_ws:
-            print("Public WebSocket에 먼저 연결하세요")
-            return
-            
-        message = [
-            {"ticket": f"ticker_{uuid.uuid4().hex[:8]}"},  # 임의의 ticket 문자열
-            {"type": "ticker", "codes": codes}
-        ]
-        
-        await self.public_ws.send(json.dumps(message))
-        if callback:
-            self.callbacks['ticker'] = callback
-        print(f"Ticker 구독 시작: {codes}")
-    
+        await self._send_subscription("ticker", codes, callback)
+
     async def subscribe_trade(self, codes: list, callback: Callable = None):
         """체결 구독"""
-        if not self.public_ws:
-            print("Public WebSocket에 먼저 연결하세요")
-            return
-            
-        message = [
-            {"ticket": f"trade_{uuid.uuid4().hex[:8]}"},  # 임의의 ticket 문자열
-            {"type": "trade", "codes": codes}
-        ]
-        
-        await self.public_ws.send(json.dumps(message))
-        if callback:
-            self.callbacks['trade'] = callback
-        print(f"Trade 구독 시작: {codes}")
-    
+        await self._send_subscription("trade", codes, callback)
+
     async def subscribe_orderbook(self, codes: list, callback: Callable = None):
         """호가 구독"""
-        if not self.public_ws:
-            print("Public WebSocket에 먼저 연결하세요")
-            return
-            
-        message = [
-            {"ticket": f"orderbook_{uuid.uuid4().hex[:8]}"},  # 임의의 ticket 문자열
-            {"type": "orderbook", "codes": codes}
-        ]
-        
-        await self.public_ws.send(json.dumps(message))
-        if callback:
-            self.callbacks['orderbook'] = callback
-        print(f"Orderbook 구독 시작: {codes}")
-    
+        await self._send_subscription("orderbook", codes, callback)
+
     async def subscribe_my_order(self, codes: list, callback: Callable = None):
         """내 주문 구독 (Private)"""
         if not self.private_ws:
@@ -371,6 +352,34 @@ class BithumbAPI:
         
         return self._make_public_request(f"/v1/candles/minutes/{minutes}", params)
 
+    def get_daily_candles(self, market: str = "KRW-BTC", count: int = 30, to: Optional[str] = None, converting_price_unit: str = "KRW") -> Dict[str, Any]:
+        """빗썸 일봉 데이터 조회
+        
+        Args:
+            market: 마켓 코드 (ex. KRW-BTC)
+            count: 캔들 개수 (최대 200개)
+            to: 마지막 캔들 시각 (ISO8061 포맷, KST 기준, 비워두면 최근 캔들)
+            converting_price_unit: 종가 환산 화폐 단위 (기본값: KRW)
+        """
+        params = {
+            "market": market,
+            "count": min(count, 200),  # 최대 200개 제한
+            "convertingPriceUnit": converting_price_unit
+        }
+        
+        if to:
+            params["to"] = to
+            
+        url = "https://api.bithumb.com/v1/candles/days"
+        headers = {"accept": "application/json"}
+        
+        try:
+            response = self.session.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {"status": "error", "message": str(e)}
+
     def get_recent_trades(self, symbol: str, limit: int = 100) -> Dict[str, Any]:
         """최근 체결 내역 조회"""
         # Bithumb API 형식에 맞게 파라미터 수정
@@ -414,15 +423,15 @@ class BithumbAPI:
     
     def place_order(self, market: str, side: str, order_type: str, price: float, volume: float) -> Dict[str, Any]:
         """주문하기"""
-        # Bithumb API 요구사항에 맞게 파라미터 조정
+        # Bithumb API 요구사항에 맞게 파라미터 조정 (공식 예제와 동일한 순서)
         params = {
             "market": market,
             "side": side,
-            "order_type": order_type,
+            "volume": round(volume, 8),  # 수량을 8자리 소수점으로 조정
             "price": int(price),  # 가격을 정수로 변환
-            "volume": round(volume, 8)  # 수량을 8자리 소수점으로 조정
+            "ord_type": order_type  # order_type -> ord_type으로 변경
         }
-        return self._make_private_request("/v2/orders", params, method="POST")
+        return self._make_private_request("/v1/orders", params, method="POST")
     
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
         """주문 취소"""

@@ -70,10 +70,10 @@ def test_private_api():
         print(f"BTC 현재가: {current_price:,}원")
         print(f"10000원으로 매수 가능한 BTC 수량: {volume:.8f}")
         
-        # BTC 매수 주문 (지정가) - 3만원치로 현재가에 매수
+        # BTC 매수 주문 (지정가) - 5천원치로 현재가에 매수 (최소 주문 금액 고려)
         print("BTC 매수 주문 진행 중...")
         buy_price = int(current_price)  # 현재 BTC 가격 사용
-        buy_volume = 30000 / current_price  # 3만원으로 살 수 있는 BTC 수량
+        buy_volume = 5000 / current_price  # 5천원으로 살 수 있는 BTC 수량
         buy_order = api.place_order(
             market="KRW-BTC",
             side="bid",
@@ -93,7 +93,7 @@ def test_private_api():
         print("5초 대기 후 매도 주문 진행...")
         time.sleep(5)
         
-        # BTC 매도 주문 (지정가) - 3만원치로 현재가에 매도
+        # BTC 매도 주문 (지정가) - 5천원치로 현재가에 매도
         print("BTC 매도 주문 진행 중...")
         sell_price = int(current_price)  # 현재 BTC 가격 사용
         sell_volume = buy_volume  # 매수한 수량만큼 매도
